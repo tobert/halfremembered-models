@@ -31,6 +31,28 @@ stop-all:
     done
     @echo "Stopped all services"
 
+# Force kill all music-models processes (including spawned workers)
+force-kill:
+    #!/usr/bin/env bash
+    set -e
+    echo "Processes that will be killed:"
+    echo "--- From halfremembered-music-models ---"
+    pgrep -af "halfremembered-music-models/services/.*/\.venv" || echo "  (none)"
+    echo "--- From old music-models ---"
+    pgrep -af "music-models/services/.*/\.venv" || echo "  (none)"
+    echo ""
+    read -p "Proceed? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        pkill -f "halfremembered-music-models/services/.*/\.venv" || true
+        pkill -f "music-models/services/.*/\.venv" || true
+        sleep 2
+        echo "Done. Remaining music-models processes:"
+        pgrep -af "music-models/services" || echo "  (none)"
+    else
+        echo "Aborted."
+    fi
+
 # Check health of a single service
 status service:
     @curl -s localhost:$(just _port {{service}})/health | jq . || echo "{{service}} not responding"
@@ -143,20 +165,54 @@ download service:
 # Systemd
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Install systemd user units
+# Generate systemd unit for a service (to stdout)
+systemd-gen service:
+    ./bin/gen-systemd.py {{service}}
+
+# Generate all systemd units to systemd/ directory
+systemd-gen-all:
+    @echo "Generating systemd units..."
+    ./bin/gen-systemd.py --all -o systemd/
+
+# Verify all generated units with systemd-analyze
+systemd-verify:
+    @./bin/gen-systemd.py --verify
+
+# Install systemd user units (generates fresh, then installs)
 systemd-install:
+    @echo "Generating and installing systemd units..."
     mkdir -p ~/.config/systemd/user
-    cp systemd/*.service ~/.config/systemd/user/
+    ./bin/gen-systemd.py --all -o ~/.config/systemd/user/
     systemctl --user daemon-reload
-    @echo "Installed systemd units. Enable with: systemctl --user enable <service>"
+    @echo "✓ Installed. Use 'just start <service>' or 'just enable <service>'"
+
+# List available services
+systemd-list:
+    @./bin/gen-systemd.py --list
 
 # Start a service via systemd
 start service:
     systemctl --user start {{service}}.service
 
+# Stop a service via systemd
+systemd-stop service:
+    systemctl --user stop {{service}}.service
+
+# Restart a service via systemd
+restart service:
+    systemctl --user restart {{service}}.service
+
 # Enable a service to start on boot
 enable service:
     systemctl --user enable {{service}}.service
+
+# Disable a service from starting on boot
+disable service:
+    systemctl --user disable {{service}}.service
+
+# Show systemd status for a service
+systemd-status service:
+    systemctl --user status {{service}}.service
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utilities
