@@ -1,0 +1,3 @@
+[submodule "services/yue/repo"]
+	path = services/yue/repo
+	url = https://github.com/multimodal-art-projection/YuE.git

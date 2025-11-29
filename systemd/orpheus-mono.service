@@ -1,0 +1,22 @@
+[Unit]
+Description=Orpheus Monophonic Melody Service
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/src/music-models/services/orpheus-mono
+ExecStart=%h/.local/bin/uv run python server.py
+Restart=on-failure
+RestartSec=10
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=orpheus-mono
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target

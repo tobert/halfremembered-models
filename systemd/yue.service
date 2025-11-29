@@ -1,0 +1,22 @@
+[Unit]
+Description=YuE Lyrics-to-Song Service
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=%h/src/music-models/services/yue
+ExecStart=%h/.local/bin/uv run python server.py
+Restart=on-failure
+RestartSec=10
+
+Environment=PYTHONUNBUFFERED=1
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=yue
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
