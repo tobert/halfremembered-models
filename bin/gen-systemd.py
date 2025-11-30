@@ -32,8 +32,11 @@ SERVICES: dict[str, tuple[int, str]] = {
     "stable-audio": (2009, "Stability AI Audio Generation"),
     "audioldm2": (2010, "AudioLDM2 Audio Generation"),
     "anticipatory": (2011, "Anticipatory Music Generation"),
-    "deepseek": (2020, "DeepSeek Tool-Calling LLM"),
+    "llmchat": (2020, "OpenAI-compatible LLM with Tool Calling"),
 }
+
+# Extra environment variables per service (for service-specific config)
+SERVICE_ENV: dict[str, list[str]] = {}
 
 UNIT_TEMPLATE = """\
 [Unit]
@@ -48,7 +51,8 @@ Restart=on-failure
 RestartSec=10
 
 Environment=PYTHONUNBUFFERED=1
-
+Environment=TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+{extra_env}
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier={service}
@@ -95,12 +99,17 @@ def generate_unit(service: str, repo_path: Path, uv_path: Path) -> str:
 
     port, description = SERVICES[service]
 
+    # Build extra environment lines
+    extra_env_lines = SERVICE_ENV.get(service, [])
+    extra_env = "\n".join(f"Environment={env}" for env in extra_env_lines)
+
     return UNIT_TEMPLATE.format(
         service=service,
         description=description,
         repo_path=repo_path,
         uv_path=uv_path,
         port=port,
+        extra_env=extra_env,
     )
 
 

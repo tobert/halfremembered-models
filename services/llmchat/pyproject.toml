@@ -1,15 +1,19 @@
 [project]
-name = "deepseek-service"
+name = "llmchat-service"
 version = "1.0.0"
-description = "deepseek service for halfremembered (skeleton)"
+description = "OpenAI-compatible LLM service with tool calling support"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "torch",
     "torchaudio",
     "torchvision",
     "pytorch-triton-rocm",
-    "litserve",
-    "hrserve",
+    "transformers",
+    "accelerate",
+    "fastapi",
+    "uvicorn[standard]",
+    "httpx",
+    "numpy",
 ]
 
 [project.optional-dependencies]
@@ -24,7 +28,6 @@ url = "https://download.pytorch.org/whl/nightly/rocm7.1"
 explicit = true
 
 [tool.uv.sources]
-hrserve = { path = "../../hrserve", editable = true }
 torch = { index = "pytorch-rocm" }
 torchaudio = { index = "pytorch-rocm" }
 torchvision = { index = "pytorch-rocm" }
@@ -32,3 +35,6 @@ pytorch-triton-rocm = { index = "pytorch-rocm" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (require model loading)",
+]

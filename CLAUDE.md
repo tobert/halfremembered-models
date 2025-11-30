@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Agent guide for halfremembered-music-models.
+Agent guide for halfremembered-models.
 
 ## What This Is
 
@@ -45,10 +45,37 @@ just logs <service>      # Follow systemd logs
 
 ## Hardware
 
-- **GPU**: AMD Radeon 8060S (AI Pro Max 395+)
-- **VRAM**: 96GB unified
+- **GPU**: AMD Radeon 8060S (Ryzen AI MAX+ 395, gfx1151/RDNA3.5)
+- **VRAM**: 96GB unified (shared CPU/GPU)
+- **Memory bandwidth**: ~240 GB/s (bottleneck for LLM inference)
 - **ROCm**: Via Arch Linux (updates frequently)
 - **PyTorch**: Nightly builds for ROCm compatibility
+
+## ROCm/gfx1151 Optimization
+
+**Required environment variable** for services using attention:
+```bash
+TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+```
+
+Without this, SDPA falls back to slow math kernels instead of flash/mem-efficient attention.
+
+**Best practices for this hardware:**
+- Use `torch.nn.functional.scaled_dot_product_attention()` - auto-selects best backend
+- Use `attn_implementation="sdpa"` when loading HF models
+- Use `dtype=torch.float16` (confirmed working)
+- Don't force specific attention backends unless debugging
+
+**Performance expectations:**
+- LLM inference is memory-bandwidth-bound (~240 GB/s), not compute-bound
+- 7B model in fp16 (~14GB weights): theoretical max ~17 tok/s, expect ~13 tok/s
+- `torch.compile` doesn't help `generate()` (too much Python control flow)
+- GPU shows 100% utilization but is mostly waiting on memory reads
+
+**Avoid:**
+- `torch.backends.cuda.sdp_kernel()` - deprecated
+- `attn_implementation="flash_attention_2"` - not available on gfx1151
+- Manual attention implementations - SDPA is faster
 
 ## PyTorch/ROCm Setup
 
@@ -116,7 +143,7 @@ Each service in `services/<name>/` has:
 | 2009 | stable-audio |
 | 2010 | audioldm2 |
 | 2011 | anticipatory |
-| 2020 | deepseek |
+| 2020 | llmchat |
 
 ## hrserve Library
 

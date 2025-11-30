@@ -1,4 +1,4 @@
-# halfremembered-music-models justfile
+# halfremembered-ustfile
 # Task runner for ML model services
 
 set shell := ["bash", "-uc"]
@@ -31,7 +31,7 @@ stop-all:
     done
     @echo "Stopped all services"
 
-# Force kill all music-models processes (including spawned workers)
+# Force kill all model (dangerous, including spawned workers)
 force-kill:
     #!/usr/bin/env bash
     set -e
@@ -247,6 +247,6 @@ _port service:
         stable-audio) echo 2009 ;; \
         audioldm2) echo 2010 ;; \
         anticipatory) echo 2011 ;; \
-        deepseek) echo 2020 ;; \
+        llmchat) echo 2020 ;; \
         *) echo "Unknown service: {{service}}" >&2; exit 1 ;; \
     esac
