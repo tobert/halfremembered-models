@@ -1,14 +1,19 @@
 [project]
 name = "anticipatory-service"
 version = "1.0.0"
-description = "anticipatory service for halfremembered (skeleton)"
+description = "Anticipatory Music Transformer - Stanford CRFM music generation"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "torch",
     "torchaudio",
     "torchvision",
     "pytorch-triton-rocm",
+    "transformers",
+    "anticipation",
+    "mido",
     "litserve",
+    "httpx",
+    "numpy",
     "hrserve",
 ]
 
@@ -25,6 +30,7 @@ explicit = true
 
 [tool.uv.sources]
 hrserve = { path = "../../hrserve", editable = true }
+anticipation = { git = "https://github.com/jthickstun/anticipation.git" }
 torch = { index = "pytorch-rocm" }
 torchaudio = { index = "pytorch-rocm" }
 torchvision = { index = "pytorch-rocm" }
