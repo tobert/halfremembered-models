@@ -143,6 +143,7 @@ Each service in `services/<name>/` has:
 | 2009 | stable-audio |
 | 2010 | audioldm2 |
 | 2011 | anticipatory |
+| 2012 | beat-this |
 | 2020 | llmchat |
 
 ## hrserve Library

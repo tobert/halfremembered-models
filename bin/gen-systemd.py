@@ -32,6 +32,7 @@ SERVICES: dict[str, tuple[int, str]] = {
     "stable-audio": (2009, "Stability AI Audio Generation"),
     "audioldm2": (2010, "AudioLDM2 Audio Generation"),
     "anticipatory": (2011, "Anticipatory Music Generation"),
+    "beat-this": (2012, "Beat This! Beat and Downbeat Tracking"),
     "llmchat": (2020, "OpenAI-compatible LLM with Tool Calling"),
 }
 
