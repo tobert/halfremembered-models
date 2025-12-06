@@ -1,40 +1,198 @@
+#!/usr/bin/env python3
 """
+Orpheus Bridge - Generate musical bridges between sections.
 
-Orpheus Bridge Model Service
 Port: 2002
+Task: bridge
+Model: bridge (43k steps, 1.8GB)
 """
-import multiprocessing
+import base64
 import logging
-import litserve as ls
-from api import OrpheusBridgeAPI
-from hrserve import setup_otel, set_process_title
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Optional
+
+import torch
+import torch.nn.functional as F
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel, Field
+
+from hrserve import OrpheusTokenizer, load_single_model
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Config
+# ─────────────────────────────────────────────────────────────────────────────
+
+PORT = 2002
+MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/tank/ml/music-models/models"))
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("orpheus-bridge")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Sampling
+# ─────────────────────────────────────────────────────────────────────────────
+
+def top_p_sampling(logits: torch.Tensor, thres: float = 0.9) -> torch.Tensor:
+    """Top-p (nucleus) sampling filter."""
+    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+    cum_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+
+    sorted_indices_to_remove = cum_probs > thres
+    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+    sorted_indices_to_remove[..., 0] = 0
+
+    indices_to_remove = torch.zeros_like(logits, dtype=torch.bool)
+    indices_to_remove.scatter_(-1, sorted_indices, sorted_indices_to_remove)
+
+    logits[indices_to_remove] = float('-inf')
+    return logits
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model
+# ─────────────────────────────────────────────────────────────────────────────
+
+model = None
+tokenizer = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load model on startup."""
+    global model, tokenizer
+
+    logger.info(f"Loading Orpheus bridge model on {DEVICE}...")
+    model = load_single_model("bridge", MODELS_DIR, DEVICE)
+    tokenizer = OrpheusTokenizer()
+    logger.info("Orpheus bridge model ready")
+
+    yield
+
+    logger.info("Shutting down")
+
+
+def generate_tokens(
+    seed_tokens: list[int],
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> list[int]:
+    """Generate tokens from bridge model."""
+    model.eval()
+
+    input_tokens = torch.LongTensor([seed_tokens]).to(DEVICE)
+    num_prime = len(seed_tokens)
+
+    with torch.no_grad():
+        out = model.generate(
+            input_tokens,
+            seq_len=num_prime + max_tokens,
+            temperature=max(0.01, temperature),
+            filter_logits_fn=top_p_sampling,
+            filter_kwargs={'thres': top_p},
+            eos_token=18817,
+        )
+
+    return out[0].tolist()[num_prime:]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# API
+# ─────────────────────────────────────────────────────────────────────────────
+
+app = FastAPI(
+    title="Orpheus Bridge",
+    description="Generate musical bridges between sections",
+    version="2.0.0",
+    lifespan=lifespan,
+)
+
+
+class BridgeRequest(BaseModel):
+    """Request to generate a musical bridge."""
+    section_a: str  # base64-encoded MIDI (required)
+    section_b: Optional[str] = None  # base64-encoded MIDI (optional, for future)
+    temperature: float = Field(default=1.0, ge=0.01, le=2.0)
+    top_p: float = Field(default=0.95, ge=0.0, le=1.0)
+    max_tokens: int = Field(default=1024, ge=1, le=8192)
+
+
+class Variation(BaseModel):
+    """A generated variation."""
+    midi_base64: str
+    num_tokens: int
+
+
+class BridgeResponse(BaseModel):
+    """Response from bridge endpoint."""
+    task: str = "bridge"
+    variations: list[Variation]
+
+
+@app.get("/health", response_class=PlainTextResponse)
+async def health():
+    """Health check."""
+    return "ok"
+
+
+@app.post("/predict", response_model=BridgeResponse)
+async def generate_bridge(request: BridgeRequest):
+    """
+    Generate a musical bridge from section_a.
+
+    The bridge continues from section_a, creating a transition.
+    section_b is reserved for future bidirectional bridging.
+    """
+    # Parse section_a (required)
+    try:
+        section_a_bytes = base64.b64decode(request.section_a)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid base64 in section_a: {e}")
+
+    try:
+        section_a_tokens = tokenizer.encode_midi(section_a_bytes)
+    except Exception as e:
+        logger.warning(f"Failed to parse section_a MIDI: {e}")
+        raise HTTPException(status_code=422, detail=f"Invalid MIDI in section_a: {e}")
+
+    # Generate bridge
+    tokens = generate_tokens(
+        seed_tokens=section_a_tokens,
+        max_tokens=request.max_tokens,
+        temperature=request.temperature,
+        top_p=request.top_p,
+    )
+
+    midi_bytes = tokenizer.decode_tokens(tokens)
+
+    logger.info(f"bridge: generated {len(tokens)} tokens")
+
+    return BridgeResponse(
+        variations=[Variation(
+            midi_base64=base64.b64encode(midi_bytes).decode(),
+            num_tokens=len(tokens),
+        )]
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method('spawn', force=True)
+    import uvicorn
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-
-    set_process_title("orpheus-bridge-api", port=2002, emoji="🎼")
-    tracer, meter = setup_otel("orpheus-bridge-api", "1.0.0")
-
-    api = OrpheusBridgeAPI()
-
-    server = ls.LitServer(
-        api,
-        accelerator="cuda",
-        devices=1,
-        workers_per_device=1,
-        max_batch_size=1,
-        timeout=300,
-    )
-
-    print("🎼 Starting Orpheus Bridge service on port 2002...")
+    print(f"🌉 Starting Orpheus Bridge on port {PORT}...")
     print("Endpoints:")
     print("  POST /predict  - Generate musical bridges")
     print("  GET  /health   - Health check")
-    print("\nTask: bridge")
 
-    server.run(port=2002)
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
