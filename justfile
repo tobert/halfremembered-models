@@ -77,16 +77,19 @@ logs service:
 sync service:
     cd services/{{service}} && uv sync
 
-# Install/sync all services
+# Install hrserve library
+sync-hrserve:
+    cd hrserve && uv sync
+
+# Install/sync all services (includes hrserve)
 sync-all:
+    @echo "=== Syncing hrserve ==="
+    cd hrserve && uv sync
+    @echo ""
     @for svc in $(ls services/); do \
         echo "=== Syncing $svc ==="; \
         cd services/$svc && uv sync && cd ../..; \
     done
-
-# Install hrserve library
-sync-hrserve:
-    cd hrserve && uv sync
 
 # Run tests for a service
 test service:
