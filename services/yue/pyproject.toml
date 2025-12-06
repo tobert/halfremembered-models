@@ -8,12 +8,29 @@ dependencies = [
     "torchaudio",
     "torchvision",
     "pytorch-triton-rocm",
-    
+
+    # YuE dependencies (from repo/requirements.txt)
+    "transformers",
+    "omegaconf",
+    "einops",
+    "sentencepiece",
+    "tqdm",
+    "tensorboard",
+    "descript-audiotools>=0.7.2",
+    "descript-audio-codec",
+    "scipy",
+    "accelerate>=0.26.0",
+
+    # Service dependencies
     "httpx",
     "numpy",
     "soundfile",
     "librosa",
     "hrserve",
+
+    # NOTE: descript-audiotools requires protobuf<3.20, which conflicts with
+    # newer OTEL versions (require protobuf>=5.0). We use compatible older versions.
+    # OTEL still works fine with these versions, just logs a warning.
 ]
 
 [project.optional-dependencies]

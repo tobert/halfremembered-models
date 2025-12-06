@@ -54,6 +54,8 @@ logger = logging.getLogger(SERVICE_NAME)
 
 job_guard = None
 otel = None
+yue_engine = None  # Direct engine (when fully implemented)
+USE_SUBPROCESS = True  # Toggle: True = subprocess (current), False = direct engine
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lifespan
@@ -63,7 +65,7 @@ otel = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize resources."""
-    global job_guard, otel
+    global job_guard, otel, yue_engine
 
     # Setup OTEL
     tracer, meter = setup_otel(f"{SERVICE_NAME}-api", "2.0.0")
@@ -89,13 +91,26 @@ async def lifespan(app: FastAPI):
         logger.error("Clone the YuE repo to services/yue/repo first!")
         # Don't fail startup, just warn
 
-    venv_python = REPO_DIR / ".venv" / "bin" / "python"
-    if not venv_python.exists():
-        logger.error(f"YuE venv not found at {venv_python}")
-        logger.error("Create venv in repo directory: cd services/yue/repo && uv venv && uv pip install -r requirements.txt")
-        # Don't fail startup, just warn
+    # Initialize YuE engine if not using subprocess
+    if not USE_SUBPROCESS:
+        try:
+            logger.info("Initializing YuE engine for direct inference...")
+            from yue_engine import YuEEngine
 
-    logger.info("YuE models will be loaded on demand by subprocess")
+            yue_engine = YuEEngine(device=DEVICE)
+            logger.info("YuE engine loaded successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize YuE engine: {e}")
+            logger.warning("Continuing in subprocess mode")
+
+    # Check subprocess requirements if using that mode
+    if USE_SUBPROCESS:
+        venv_python = REPO_DIR / ".venv" / "bin" / "python"
+        if not venv_python.exists():
+            logger.warning(f"YuE subprocess venv not found at {venv_python}")
+            logger.warning("Using current Python interpreter instead")
+
+        logger.info("YuE will use subprocess mode (models loaded per-request)")
 
     yield
 
@@ -135,11 +150,11 @@ async def generate_song_subprocess(
         lyrics_path.write_text(lyrics)
         genre_path.write_text(genre)
 
-        # Construct command
-        venv_python = REPO_DIR / ".venv" / "bin" / "python"
+        # Construct command - use current Python interpreter
+        python_exe = sys.executable
 
         cmd = [
-            str(venv_python),
+            python_exe,
             "infer.py",
             "--stage1_model",
             "m-a-p/YuE-s1-7B-anneal-en-cot",
