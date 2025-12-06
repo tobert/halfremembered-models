@@ -1,7 +1,7 @@
 [project]
-name = "audioldm2-service"
+name = "beat-this-service"
 version = "1.0.0"
-description = "audioldm2 service for halfremembered (skeleton)"
+description = "Beat This! beat and downbeat tracking service"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "torch",
@@ -9,6 +9,15 @@ dependencies = [
     "torchvision",
     "pytorch-triton-rocm",
     
+    "httpx",
+    "numpy",
+    "soundfile",
+    # beat_this deps
+    "tqdm",
+    "einops",
+    "soxr",
+    "rotary-embedding-torch",
+    "beat-this @ https://github.com/CPJKU/beat_this/archive/main.zip",
     "hrserve",
 ]
 
@@ -32,3 +41,7 @@ pytorch-triton-rocm = { index = "pytorch-rocm" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "benchmark: marks tests as benchmarks",
+]
