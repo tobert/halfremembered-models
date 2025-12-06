@@ -83,10 +83,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"VRAM check skipped: {e}")
 
-    # Verify repo exists
+    # Verify repo and venv exist
     if not INFERENCE_DIR.exists():
         logger.error(f"YuE repo not found at {INFERENCE_DIR}")
-        logger.error("Run setup_repo.sh first!")
+        logger.error("Clone the YuE repo to services/yue/repo first!")
+        # Don't fail startup, just warn
+
+    venv_python = REPO_DIR / ".venv" / "bin" / "python"
+    if not venv_python.exists():
+        logger.error(f"YuE venv not found at {venv_python}")
+        logger.error("Create venv in repo directory: cd services/yue/repo && uv venv && uv pip install -r requirements.txt")
         # Don't fail startup, just warn
 
     logger.info("YuE models will be loaded on demand by subprocess")
@@ -217,12 +223,14 @@ async def generate_song_subprocess(
             logger.error("No output file found")
             logger.error(f"Stdout: {stdout_str[-1000:]}")
             return {
+                "status": "error",
                 "error": "Generation failed - no output file produced",
             }
 
     except Exception as e:
         logger.exception("Unexpected error during generation")
         return {
+            "status": "error",
             "error": str(e),
         }
 
