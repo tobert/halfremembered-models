@@ -9,7 +9,7 @@ dependencies = [
     "torchvision",
     "pytorch-triton-rocm",
     "transformers",
-    "litserve",
+    
     "httpx",
     "numpy",
     "soundfile",
