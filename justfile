@@ -61,6 +61,10 @@ status service:
 status-all:
     @curl -s localhost:1337/services | jq '.services[] | {name, status, vram: .vram.estimated_mb}'
 
+# Validate all services (health + functional tests)
+validate:
+    @./services/orpheus-base/.venv/bin/python bin/validate-services.py
+
 # Follow logs for a service (systemd)
 logs service:
     journalctl --user -u {{service}}.service -f
@@ -210,6 +214,24 @@ enable service:
 disable service:
     systemctl --user disable {{service}}.service
 
+# Enable all core services to start on boot
+enable-all:
+    #!/usr/bin/env bash
+    for service in orpheus-base orpheus-classifier orpheus-bridge orpheus-loops orpheus-children orpheus-mono musicgen clap yue; do
+        echo "Enabling $service..."
+        systemctl --user enable $service.service
+    done
+    echo "✓ All core services enabled for auto-start"
+
+# Start all core services
+start-all:
+    #!/usr/bin/env bash
+    for service in orpheus-base orpheus-classifier orpheus-bridge orpheus-loops orpheus-children orpheus-mono musicgen clap yue; do
+        echo "Starting $service..."
+        systemctl --user start $service.service
+    done
+    echo "✓ All core services started"
+
 # Show systemd status for a service
 systemd-status service:
     systemctl --user status {{service}}.service
@@ -247,6 +269,7 @@ _port service:
         stable-audio) echo 2009 ;; \
         audioldm2) echo 2010 ;; \
         anticipatory) echo 2011 ;; \
+        beat-this) echo 2012 ;; \
         llmchat) echo 2020 ;; \
         *) echo "Unknown service: {{service}}" >&2; exit 1 ;; \
     esac
