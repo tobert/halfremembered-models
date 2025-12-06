@@ -10,6 +10,9 @@ dependencies = [
     "tqdm",
     "matplotlib",
     "psutil",
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
 ]
 
 [project.optional-dependencies]

@@ -22,6 +22,15 @@ from hrserve.process_utils import set_process_title
 from hrserve.audio_utils import AudioEncoder
 from hrserve.midi_utils import MIDIEncoder
 
+# FastAPI utilities (requires fastapi, pydantic - core deps)
+from hrserve.fastapi_utils import (
+    SingleJobGuard,
+    BusyException,
+    ResponseMetadata,
+    validate_client_job_id,
+)
+from hrserve.otel_fastapi import OTELContext
+
 # These require torch - import conditionally
 try:
     from hrserve.model_base import ModelAPI, BusyError
@@ -49,14 +58,23 @@ except ImportError:
     MODEL_PATHS = None
 
 __all__ = [
+    # FastAPI utilities
+    "SingleJobGuard",
+    "BusyException",
+    "ResponseMetadata",
+    "validate_client_job_id",
+    "OTELContext",
+    # LitServe ModelAPI (legacy)
     "ModelAPI",
     "BusyError",
+    # Core utilities
     "VRAMMonitor",
     "check_available_vram",
     "AudioEncoder",
     "MIDIEncoder",
     "setup_otel",
     "set_process_title",
+    # Orpheus-specific
     "OrpheusTokenizer",
     "OrpheusTransformer",
     "OrpheusClassifier",
