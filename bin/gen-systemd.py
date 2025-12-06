@@ -53,7 +53,7 @@ RestartSec=10
 
 Environment=PYTHONUNBUFFERED=1
 Environment=TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
-Environment=OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+Environment=OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
 {extra_env}
 StandardOutput=journal
 StandardError=journal
