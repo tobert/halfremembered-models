@@ -156,7 +156,7 @@ async def health():
 
 
 @app.post("/predict", response_model=MusicGenResponse)
-async def generate(request: MusicGenRequest):
+def generate(request: MusicGenRequest):
     """
     Generate music from text prompt.
 

@@ -218,7 +218,7 @@ async def health():
 
 
 @app.post("/predict", response_model=BeatThisResponse)
-async def detect_beats(request: BeatThisRequest):
+def detect_beats(request: BeatThisRequest):
     """
     Detect beats and downbeats in audio.
 

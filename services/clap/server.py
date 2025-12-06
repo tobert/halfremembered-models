@@ -216,7 +216,7 @@ async def health():
 
 
 @app.post("/predict", response_model=CLAPResponse)
-async def analyze(request: CLAPRequest):
+def analyze(request: CLAPRequest):
     """
     Analyze audio with CLAP.
 
