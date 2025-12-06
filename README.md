@@ -1,4 +1,4 @@
-# 🎵 halfremembered-music-models
+# 🎵 halfremembered-models
 
 ML model services for the halfremembered agentic music production system.
 
@@ -75,7 +75,7 @@ just test clap
 ## Project Structure
 
 ```
-halfremembered-music-models/
+halfremembered-models/
 ├── hrserve/                 # Shared serving library
 │   ├── pyproject.toml
 │   ├── hrserve/
