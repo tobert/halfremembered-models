@@ -19,13 +19,21 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from hrserve import OrpheusTokenizer, load_single_model
+from hrserve import (
+    OTELContext,
+    OrpheusTokenizer,
+    ResponseMetadata,
+    load_single_model,
+    setup_otel,
+    validate_client_job_id,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
 PORT = 2003
+SERVICE_NAME = "orpheus-loops"
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/tank/ml/music-models/models"))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -33,7 +41,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-logger = logging.getLogger("orpheus-loops")
+logger = logging.getLogger(SERVICE_NAME)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,12 +70,17 @@ def top_p_sampling(logits: torch.Tensor, thres: float = 0.9) -> torch.Tensor:
 
 model = None
 tokenizer = None
+otel = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup."""
-    global model, tokenizer
+    global model, tokenizer, otel
+
+    # Setup OTEL
+    tracer, meter = setup_otel(f"{SERVICE_NAME}-api", "2.0.0")
+    otel = OTELContext(tracer, SERVICE_NAME)
 
     logger.info(f"Loading Orpheus loops model on {DEVICE}...")
     model = load_single_model("loops", MODELS_DIR, DEVICE)
@@ -139,51 +152,64 @@ class LoopsResponse(BaseModel):
     """Response from loops endpoint."""
     task: str = "loops"
     variations: list[Variation]
+    meta: Optional[ResponseMetadata] = None
 
 
-@app.get("/health", response_class=PlainTextResponse)
-async def health():
+@app.get("/health")
+def health():
     """Health check."""
-    return "ok"
+    return {"status": "ok", "service": SERVICE_NAME, "version": "2.0.0"}
 
 
 @app.post("/predict", response_model=LoopsResponse)
-async def generate_loops(request: LoopsRequest):
+def generate_loops(request: LoopsRequest, client_job_id: Optional[str] = None):
     """Generate drum/percussion loops, optionally from seed MIDI."""
-    seed_tokens = []
+    # Validate client job ID
+    validate_client_job_id(client_job_id)
 
-    # Parse seed MIDI if provided
-    if request.seed_midi:
-        try:
-            midi_bytes = base64.b64decode(request.seed_midi)
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Invalid base64: {e}")
+    # Start OTEL span
+    with otel.start_span("generate_loops") as span:
+        span.set_attribute("max_tokens", request.max_tokens)
+        span.set_attribute("num_variations", request.num_variations)
 
-        try:
-            seed_tokens = tokenizer.encode_midi(midi_bytes)
-        except Exception as e:
-            logger.warning(f"Failed to parse seed MIDI: {e}")
-            raise HTTPException(status_code=422, detail=f"Invalid MIDI: {e}")
+        seed_tokens = []
 
-    # Generate variations
-    variations = []
-    for _ in range(request.num_variations):
-        tokens = generate_tokens(
-            seed_tokens=seed_tokens,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
+        # Parse seed MIDI if provided
+        if request.seed_midi:
+            try:
+                midi_bytes = base64.b64decode(request.seed_midi)
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"Invalid base64: {e}")
+
+            try:
+                seed_tokens = tokenizer.encode_midi(midi_bytes)
+                span.set_attribute("seed_tokens", len(seed_tokens))
+            except Exception as e:
+                logger.warning(f"Failed to parse seed MIDI: {e}")
+                raise HTTPException(status_code=422, detail=f"Invalid MIDI: {e}")
+
+        # Generate variations
+        variations = []
+        for _ in range(request.num_variations):
+            tokens = generate_tokens(
+                seed_tokens=seed_tokens,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                top_p=request.top_p,
+            )
+
+            midi_bytes = tokenizer.decode_tokens(tokens)
+            variations.append(Variation(
+                midi_base64=base64.b64encode(midi_bytes).decode(),
+                num_tokens=len(tokens),
+            ))
+
+        logger.info(f"loops: generated {len(variations)} variation(s), {variations[0].num_tokens} tokens each")
+
+        return LoopsResponse(
+            variations=variations,
+            meta=otel.get_response_metadata(client_job_id),
         )
-
-        midi_bytes = tokenizer.decode_tokens(tokens)
-        variations.append(Variation(
-            midi_base64=base64.b64encode(midi_bytes).decode(),
-            num_tokens=len(tokens),
-        ))
-
-    logger.info(f"loops: generated {len(variations)} variation(s), {variations[0].num_tokens} tokens each")
-
-    return LoopsResponse(variations=variations)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -16,16 +16,23 @@ from typing import Literal, Optional
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from hrserve import OrpheusTokenizer, load_single_model
+from hrserve import (
+    OTELContext,
+    OrpheusTokenizer,
+    ResponseMetadata,
+    load_single_model,
+    setup_otel,
+    validate_client_job_id,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
 PORT = 2004
+SERVICE_NAME = "orpheus-children"
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/tank/ml/music-models/models"))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -33,7 +40,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-logger = logging.getLogger("orpheus-children")
+logger = logging.getLogger(SERVICE_NAME)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,12 +69,17 @@ def top_p_sampling(logits: torch.Tensor, thres: float = 0.9) -> torch.Tensor:
 
 model = None
 tokenizer = None
+otel = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup."""
-    global model, tokenizer
+    global model, tokenizer, otel
+
+    # Setup OTEL
+    tracer, meter = setup_otel(f"{SERVICE_NAME}-api", "2.0.0")
+    otel = OTELContext(tracer, SERVICE_NAME)
 
     logger.info(f"Loading Orpheus children's music model on {DEVICE}...")
     model = load_single_model("children", MODELS_DIR, DEVICE)
@@ -140,16 +152,17 @@ class ChildrenResponse(BaseModel):
     """Response from children endpoint."""
     task: str
     variations: list[Variation]
+    meta: Optional[ResponseMetadata] = None
 
 
-@app.get("/health", response_class=PlainTextResponse)
-async def health():
+@app.get("/health")
+def health():
     """Health check."""
-    return "ok"
+    return {"status": "ok", "service": SERVICE_NAME, "version": "2.0.0"}
 
 
 @app.post("/predict", response_model=ChildrenResponse)
-async def generate_children(request: ChildrenRequest):
+def generate_children(request: ChildrenRequest, client_job_id: Optional[str] = None):
     """
     Generate children's music.
 
@@ -157,44 +170,58 @@ async def generate_children(request: ChildrenRequest):
     - generate: Create from scratch
     - continue: Continue existing MIDI sequence
     """
-    task = request.task
-    seed_tokens = []
+    # Validate client job ID
+    validate_client_job_id(client_job_id)
 
-    # Parse MIDI input if continuing
-    if task == "continue":
-        if not request.midi_input:
-            raise HTTPException(status_code=422, detail="continue requires midi_input")
+    # Start OTEL span
+    with otel.start_span("generate") as span:
+        task = request.task
+        span.set_attribute("task", task)
+        span.set_attribute("max_tokens", request.max_tokens)
+        span.set_attribute("num_variations", request.num_variations)
 
-        try:
-            midi_bytes = base64.b64decode(request.midi_input)
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Invalid base64: {e}")
+        seed_tokens = []
 
-        try:
-            seed_tokens = tokenizer.encode_midi(midi_bytes)
-        except Exception as e:
-            logger.warning(f"Failed to parse MIDI: {e}")
-            raise HTTPException(status_code=422, detail=f"Invalid MIDI: {e}")
+        # Parse MIDI input if continuing
+        if task == "continue":
+            if not request.midi_input:
+                raise HTTPException(status_code=422, detail="continue requires midi_input")
 
-    # Generate variations
-    variations = []
-    for _ in range(request.num_variations):
-        tokens = generate_tokens(
-            seed_tokens=seed_tokens,
-            max_tokens=request.max_tokens,
-            temperature=request.temperature,
-            top_p=request.top_p,
+            try:
+                midi_bytes = base64.b64decode(request.midi_input)
+            except Exception as e:
+                raise HTTPException(status_code=422, detail=f"Invalid base64: {e}")
+
+            try:
+                seed_tokens = tokenizer.encode_midi(midi_bytes)
+                span.set_attribute("seed_tokens", len(seed_tokens))
+            except Exception as e:
+                logger.warning(f"Failed to parse MIDI: {e}")
+                raise HTTPException(status_code=422, detail=f"Invalid MIDI: {e}")
+
+        # Generate variations
+        variations = []
+        for _ in range(request.num_variations):
+            tokens = generate_tokens(
+                seed_tokens=seed_tokens,
+                max_tokens=request.max_tokens,
+                temperature=request.temperature,
+                top_p=request.top_p,
+            )
+
+            midi_bytes = tokenizer.decode_tokens(tokens)
+            variations.append(Variation(
+                midi_base64=base64.b64encode(midi_bytes).decode(),
+                num_tokens=len(tokens),
+            ))
+
+        logger.info(f"{task}: generated {len(variations)} variation(s), {variations[0].num_tokens} tokens each")
+
+        return ChildrenResponse(
+            task=task,
+            variations=variations,
+            meta=otel.get_response_metadata(client_job_id),
         )
-
-        midi_bytes = tokenizer.decode_tokens(tokens)
-        variations.append(Variation(
-            midi_base64=base64.b64encode(midi_bytes).decode(),
-            num_tokens=len(tokens),
-        ))
-
-    logger.info(f"{task}: generated {len(variations)} variation(s), {variations[0].num_tokens} tokens each")
-
-    return ChildrenResponse(task=task, variations=variations)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

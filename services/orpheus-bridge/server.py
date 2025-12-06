@@ -16,16 +16,23 @@ from typing import Optional
 import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
-from hrserve import OrpheusTokenizer, load_single_model
+from hrserve import (
+    OTELContext,
+    OrpheusTokenizer,
+    ResponseMetadata,
+    load_single_model,
+    setup_otel,
+    validate_client_job_id,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
 
 PORT = 2002
+SERVICE_NAME = "orpheus-bridge"
 MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/tank/ml/music-models/models"))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -33,7 +40,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-logger = logging.getLogger("orpheus-bridge")
+logger = logging.getLogger(SERVICE_NAME)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -62,12 +69,17 @@ def top_p_sampling(logits: torch.Tensor, thres: float = 0.9) -> torch.Tensor:
 
 model = None
 tokenizer = None
+otel = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load model on startup."""
-    global model, tokenizer
+    global model, tokenizer, otel
+
+    # Setup OTEL
+    tracer, meter = setup_otel(f"{SERVICE_NAME}-api", "2.0.0")
+    otel = OTELContext(tracer, SERVICE_NAME)
 
     logger.info(f"Loading Orpheus bridge model on {DEVICE}...")
     model = load_single_model("bridge", MODELS_DIR, DEVICE)
@@ -135,52 +147,62 @@ class BridgeResponse(BaseModel):
     """Response from bridge endpoint."""
     task: str = "bridge"
     variations: list[Variation]
+    meta: Optional[ResponseMetadata] = None
 
 
-@app.get("/health", response_class=PlainTextResponse)
-async def health():
+@app.get("/health")
+def health():
     """Health check."""
-    return "ok"
+    return {"status": "ok", "service": SERVICE_NAME, "version": "2.0.0"}
 
 
 @app.post("/predict", response_model=BridgeResponse)
-async def generate_bridge(request: BridgeRequest):
+def generate_bridge(request: BridgeRequest, client_job_id: Optional[str] = None):
     """
     Generate a musical bridge from section_a.
 
     The bridge continues from section_a, creating a transition.
     section_b is reserved for future bidirectional bridging.
     """
-    # Parse section_a (required)
-    try:
-        section_a_bytes = base64.b64decode(request.section_a)
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Invalid base64 in section_a: {e}")
+    # Validate client job ID
+    validate_client_job_id(client_job_id)
 
-    try:
-        section_a_tokens = tokenizer.encode_midi(section_a_bytes)
-    except Exception as e:
-        logger.warning(f"Failed to parse section_a MIDI: {e}")
-        raise HTTPException(status_code=422, detail=f"Invalid MIDI in section_a: {e}")
+    # Start OTEL span
+    with otel.start_span("generate_bridge") as span:
+        span.set_attribute("max_tokens", request.max_tokens)
 
-    # Generate bridge
-    tokens = generate_tokens(
-        seed_tokens=section_a_tokens,
-        max_tokens=request.max_tokens,
-        temperature=request.temperature,
-        top_p=request.top_p,
-    )
+        # Parse section_a (required)
+        try:
+            section_a_bytes = base64.b64decode(request.section_a)
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Invalid base64 in section_a: {e}")
 
-    midi_bytes = tokenizer.decode_tokens(tokens)
+        try:
+            section_a_tokens = tokenizer.encode_midi(section_a_bytes)
+            span.set_attribute("section_a_tokens", len(section_a_tokens))
+        except Exception as e:
+            logger.warning(f"Failed to parse section_a MIDI: {e}")
+            raise HTTPException(status_code=422, detail=f"Invalid MIDI in section_a: {e}")
 
-    logger.info(f"bridge: generated {len(tokens)} tokens")
+        # Generate bridge
+        tokens = generate_tokens(
+            seed_tokens=section_a_tokens,
+            max_tokens=request.max_tokens,
+            temperature=request.temperature,
+            top_p=request.top_p,
+        )
 
-    return BridgeResponse(
-        variations=[Variation(
-            midi_base64=base64.b64encode(midi_bytes).decode(),
-            num_tokens=len(tokens),
-        )]
-    )
+        midi_bytes = tokenizer.decode_tokens(tokens)
+
+        logger.info(f"bridge: generated {len(tokens)} tokens")
+
+        return BridgeResponse(
+            variations=[Variation(
+                midi_base64=base64.b64encode(midi_bytes).decode(),
+                num_tokens=len(tokens),
+            )],
+            meta=otel.get_response_metadata(client_job_id),
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
