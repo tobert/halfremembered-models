@@ -9,7 +9,8 @@ dependencies = [
     "torchvision",
     "pytorch-triton-rocm",
     "x-transformers",
-    "litserve",
+    "fastapi",
+    "uvicorn",
     "hrserve",
 ]
 
