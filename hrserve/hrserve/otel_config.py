@@ -2,7 +2,7 @@
 OpenTelemetry configuration for Music Models servers.
 
 Configure via environment variables:
-- OTEL_EXPORTER_OTLP_ENDPOINT: OTLP endpoint (e.g., http://localhost:4318)
+- OTEL_EXPORTER_OTLP_ENDPOINT: OTLP gRPC endpoint (e.g., localhost:4317)
 - OTEL_SERVICE_NAME: Service name override (default: server-specific)
 """
 
