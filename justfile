@@ -254,6 +254,24 @@ impresario:
     @curl -s localhost:1337 | jq .
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Model Downloads
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Download xcodec_mini_infer for YuE service
+download-xcodec:
+    #!/usr/bin/env bash
+    set -e
+    if [ -d "/tank/ml/models/xcodec_mini_infer" ]; then
+        echo "✓ xcodec_mini_infer already exists at /tank/ml/models/xcodec_mini_infer"
+    else
+        echo "Downloading xcodec_mini_infer from HuggingFace..."
+        mkdir -p /tank/ml/models
+        cd /tank/ml/models
+        git clone https://huggingface.co/m-a-p/xcodec_mini_infer
+        echo "✓ Downloaded xcodec_mini_infer (1.75 GB)"
+    fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -274,5 +292,6 @@ _port service:
         anticipatory) echo 2011 ;; \
         beat-this) echo 2012 ;; \
         llmchat) echo 2020 ;; \
+        observer) echo 2099 ;; \
         *) echo "Unknown service: {{service}}" >&2; exit 1 ;; \
     esac

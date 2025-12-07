@@ -34,6 +34,7 @@ SERVICES: dict[str, tuple[int, str]] = {
     "anticipatory": (2011, "Anticipatory Music Generation"),
     "beat-this": (2012, "Beat This! Beat and Downbeat Tracking"),
     "llmchat": (2020, "OpenAI-compatible LLM with Tool Calling"),
+    "observer": (2099, "ROCm GPU Observability Agent"),
 }
 
 # Extra environment variables per service (for service-specific config)
