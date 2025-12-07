@@ -2,6 +2,9 @@
 
 Agent guide for halfremembered-models.
 
+> **Environment**: Hand-crafted on Arch Linux with AMD ROCm. ROCm tools are in `/opt/rocm/bin/`.
+> PyTorch uses nightly builds for gfx1151 (RDNA 3.5) compatibility.
+
 ## What This Is
 
 ML model services for the halfremembered music production system.
@@ -129,22 +132,23 @@ Each service in `services/<name>/` has:
 
 ## Port Assignments
 
-| Port | Service |
-|------|---------|
-| 2000 | orpheus-base |
-| 2001 | orpheus-classifier |
-| 2002 | orpheus-bridge |
-| 2003 | orpheus-loops |
-| 2004 | orpheus-children |
-| 2005 | orpheus-mono |
-| 2006 | musicgen |
-| 2007 | clap |
-| 2008 | yue |
-| 2009 | stable-audio |
-| 2010 | audioldm2 |
-| 2011 | anticipatory |
-| 2012 | beat-this |
-| 2020 | llmchat |
+| Port | Service | Status |
+|------|---------|--------|
+| 2000 | orpheus-base | ✅ |
+| 2001 | orpheus-classifier | ✅ |
+| 2002 | orpheus-bridge | ✅ |
+| 2003 | orpheus-loops | ✅ |
+| 2004 | orpheus-children | ✅ |
+| 2005 | orpheus-mono | ✅ |
+| 2006 | musicgen | ✅ |
+| 2007 | clap | ✅ |
+| 2008 | yue | ✅ |
+| 2009 | stable-audio | WIP |
+| 2010 | audioldm2 | WIP |
+| 2011 | anticipatory | ✅ |
+| 2012 | beat-this | ✅ |
+| 2020 | llmchat | ✅ |
+| 2099 | observer | ✅ |
 
 ## hrserve Library
 
@@ -160,10 +164,13 @@ Contains:
 - `audio_utils.py` - Audio encoding/decoding
 - `midi_utils.py` - MIDI encoding/decoding
 - `vram_monitor.py` - GPU memory tracking
-- `otel_config.py` - OpenTelemetry setup
+- `otel_config.py` - OpenTelemetry tracer setup
+- `otel_fastapi.py` - OTELContext with start_span/trace_predict
+- `fastapi_utils.py` - FastAPI helpers
 - `process_utils.py` - Process naming
+- `testing.py` - Test utilities
 - `orpheus_tokenizer.py` - Orpheus MIDI tokenizer
-- `orpheus_models.py` - Orpheus model architectures
+- `orpheus_models.py` - Orpheus model architectures (loads fp16)
 - `TMIDIX.py` - MIDI tokenization library
 
 ## Testing Strategy
