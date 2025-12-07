@@ -91,10 +91,8 @@ class ModelAPI(ABC):
 
     def get_model_dir(self) -> Path:
         """Get path to models directory."""
-        # Use MODELS_DIR env var, or default to /tank/ml/music-models/models
-        import os
-        models_dir = os.environ.get("MODELS_DIR", "/tank/ml/music-models/models")
-        return Path(models_dir)
+        from hrserve.config import MODELS_DIR
+        return MODELS_DIR
 
     @contextmanager
     def acquire_or_busy(self):

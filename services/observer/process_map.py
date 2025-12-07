@@ -329,7 +329,7 @@ def _query_llmchat_model() -> str | None:
         data = resp.json()
         if data.get("data"):
             model_id = data["data"][0].get("id", "")
-            # Extract model name from path like /tank/.../Qwen3-VL-4B-Instruct
+            # Extract model name from path like /.../models/Qwen3-VL-4B-Instruct
             return model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
     except Exception:
         pass

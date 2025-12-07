@@ -24,6 +24,8 @@ from transformers import (
     TextIteratorStreamer,
 )
 
+from hrserve.config import QWEN_VL_4B_PATH, QWEN_VL_8B_PATH
+
 from openai_types import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -53,8 +55,8 @@ MODEL_CONFIGS = {
     "qwen2.5-32b": "Qwen/Qwen2.5-32B-Instruct",
     "qwen2.5-3b": "Qwen/Qwen2.5-3B-Instruct",
     # Vision-Language models
-    "qwen3-vl-4b": "/tank/halfremembered/models/Qwen3-VL-4B-Instruct",
-    "qwen3-vl-8b": "/tank/halfremembered/models/Qwen3-VL-8B-Instruct",
+    "qwen3-vl-4b": str(QWEN_VL_4B_PATH),
+    "qwen3-vl-8b": str(QWEN_VL_8B_PATH),
 }
 
 DEFAULT_MODEL = "qwen2.5-7b"

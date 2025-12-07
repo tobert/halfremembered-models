@@ -162,7 +162,8 @@ gpu-watch:
 # Model Downloads
 # ─────────────────────────────────────────────────────────────────────────────
 
-models_dir := "/tank/halfremembered/models"
+# Default to env var or ~/halfremembered/models
+models_dir := env_var_or_default("MODELS_DIR", env_var("HOME") + "/halfremembered/models")
 
 # Download models for a service
 download service:
@@ -261,14 +262,17 @@ impresario:
 download-xcodec:
     #!/usr/bin/env bash
     set -e
-    if [ -d "/tank/ml/models/xcodec_mini_infer" ]; then
-        echo "✓ xcodec_mini_infer already exists at /tank/ml/models/xcodec_mini_infer"
+    MODELS_DIR="{{models_dir}}"
+    TARGET="$MODELS_DIR/xcodec_mini_infer"
+    
+    if [ -d "$TARGET" ]; then
+        echo "✓ xcodec_mini_infer already exists at $TARGET"
     else
-        echo "Downloading xcodec_mini_infer from HuggingFace..."
-        mkdir -p /tank/ml/models
-        cd /tank/ml/models
+        echo "Downloading xcodec_mini_infer from HuggingFace to $TARGET..."
+        mkdir -p "$MODELS_DIR"
+        cd "$MODELS_DIR"
         git clone https://huggingface.co/m-a-p/xcodec_mini_infer
-        echo "✓ Downloaded xcodec_mini_infer (1.75 GB)"
+        echo "✓ Downloaded xcodec_mini_infer"
     fi
 
 # ─────────────────────────────────────────────────────────────────────────────

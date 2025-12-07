@@ -19,6 +19,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 
+from hrserve.config import MODELS_DIR
 from hrserve import (
     OTELContext,
     OrpheusTokenizer,
@@ -34,7 +35,6 @@ from hrserve import (
 
 PORT = 2003
 SERVICE_NAME = "orpheus-loops"
-MODELS_DIR = Path(os.environ.get("MODELS_DIR", "/tank/ml/music-models/models"))
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 logging.basicConfig(

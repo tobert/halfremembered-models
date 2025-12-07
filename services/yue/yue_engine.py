@@ -3,18 +3,23 @@ YuE Engine - Wrapper around YuE inference for direct Python API.
 
 Refactored from repo/inference/infer.py to be callable without subprocess.
 """
-import os
-import sys
 import logging
+import sys
+import time
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple, Dict, Any
 import numpy as np
+import torch
+import torchaudio
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+from hrserve.config import YUE_XCODEC_DIR
 
 logger = logging.getLogger(__name__)
 
-# Add paths for our extracted code and xcodec
+# Constants
 YUE_CORE_DIR = Path(__file__).parent / "yue_core"
-XCODEC_DIR = Path("/tank/ml/models/xcodec_mini_infer")
+XCODEC_DIR = YUE_XCODEC_DIR
 
 # Add to Python path
 sys.path.insert(0, str(YUE_CORE_DIR))  # For codecmanipulator, mmtokenizer
@@ -66,7 +71,7 @@ class YuEEngine:
         self.stage1_model_name = stage1_model
         self.stage2_model_name = stage2_model
 
-        # Set default paths if not provided (point to /tank/ml/models/xcodec_mini_infer)
+        # Set default paths if not provided (uses hrserve.config)
         if basic_model_config is None:
             basic_model_config = XCODEC_DIR / "final_ckpt" / "config.yaml"
         if resume_path is None:

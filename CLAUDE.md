@@ -5,10 +5,13 @@ Agent guide for halfremembered-models.
 > **Environment**: Hand-crafted on Arch Linux with AMD ROCm. ROCm tools are in `/opt/rocm/bin/`.
 > PyTorch uses nightly builds for gfx1151 (RDNA 3.5) compatibility.
 
-## What This Is
+## Configuration
 
-ML model services for the halfremembered music production system.
-Each service = one process, one model, one bespoke API.
+Configuration is centralized in `hrserve/hrserve/config.py`.
+
+- **MODELS_DIR**: Base directory for model weights.
+  - Defaults to `~/halfremembered/models` (or `./models` fallback).
+  - Can be set via environment variable: `export MODELS_DIR=/path/to/models`.
 
 **Why bespoke APIs?** Off-the-shelf inference servers work for chat. We want deeper access: latent space manipulation, custom sampling, synaesthetic experiments.
 
