@@ -15,28 +15,23 @@ Each service = one process, one model, one bespoke API.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│  MCP (Rust)                                             │
-│  - Agent orchestration                                  │
-│  - Tool definitions                                     │
-└──────────────────────┬──────────────────────────────────┘
-                       │ HTTP
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│  impresario (Python/FastAPI)                            │
-│  - Job queue, GPU serialization                         │
-│  - Health monitoring                                    │
-│  - Port 1337                                            │
+│  Your Application / MCP Server / CLI                    │
+│  - Orchestrates model calls                             │
+│  - Combines outputs (MIDI → audio, etc.)                │
 └──────────────────────┬──────────────────────────────────┘
                        │ HTTP (localhost:200x)
                        ▼
 ┌─────────────────────────────────────────────────────────┐
-│  Model Services (Python/LitServe)      ← this repo      │
+│  Model Services (Python/FastAPI)       ← this repo      │
 │  - One process per model                                │
-│  - Independent venvs                                    │
+│  - Independent venvs (uv)                               │
 │  - Bespoke APIs per model                               │
 │  - Ports 2000-2099                                      │
+│  - Managed via systemd user units                       │
 └─────────────────────────────────────────────────────────┘
 ```
+
+Each service is standalone - start what you need, ignore the rest.
 
 ## Quick Start
 
@@ -120,14 +115,13 @@ halfremembered-models/
 └── CLAUDE.md               # Agent instructions
 ```
 
-## Contract with impresario
+## Service API
 
-Each service must:
-- Expose `POST /predict` (params in, result out)
-- Expose `GET /health` (status, vram, uptime)
-- Listen on assigned port (2000-2099)
+Each service exposes:
+- `POST /predict` - Model inference (JSON in, JSON out)
+- `GET /health` - Returns `{"status": "ok"}` when ready
 
-That's it. Keep coupling low.
+Services are independent - call them directly via HTTP.
 
 ## License & Attribution
 

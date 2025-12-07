@@ -12,6 +12,55 @@ Each service = one process, one model, one bespoke API.
 
 **Why bespoke APIs?** Off-the-shelf inference servers work for chat. We want deeper access: latent space manipulation, custom sampling, synaesthetic experiments.
 
+## Getting Started
+
+### 1. Start a service
+
+```bash
+just sync orpheus-base    # First time: install dependencies
+just run orpheus-base     # Run in foreground (or: systemctl --user start orpheus-base)
+```
+
+### 2. Generate music
+
+```bash
+# Generate MIDI (returns base64-encoded .mid file)
+curl -X POST http://localhost:2000/predict \
+  -H "Content-Type: application/json" \
+  -d '{"task": "generate", "max_tokens": 512}'
+
+# Classify MIDI as human vs AI
+curl -X POST http://localhost:2001/predict \
+  -H "Content-Type: application/json" \
+  -d '{"midi_input": "<base64-encoded-midi>"}'
+
+# Generate audio from text prompt
+curl -X POST http://localhost:2006/predict \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "upbeat electronic dance music", "duration": 10.0}'
+
+# Get audio embeddings for similarity/search
+curl -X POST http://localhost:2007/predict \
+  -H "Content-Type: application/json" \
+  -d '{"audio": "<base64-encoded-wav>", "tasks": ["embeddings"]}'
+```
+
+### Service Overview
+
+| Service | What it does |
+|---------|--------------|
+| **orpheus-base** | Generate MIDI from scratch or continue existing MIDI |
+| **orpheus-classifier** | Detect if MIDI was composed by human or AI |
+| **orpheus-bridge** | Create transitions between two MIDI sections |
+| **orpheus-loops** | Generate loopable drum/percussion patterns |
+| **orpheus-children** | Generate children's music style MIDI |
+| **orpheus-mono** | Generate single-voice melodies |
+| **musicgen** | Text-to-audio generation (Meta's model) |
+| **clap** | Audio embeddings, zero-shot classification |
+| **yue** | Lyrics → full song with vocals (7B + 1B, slow) |
+| **llmchat** | OpenAI-compatible chat API (tool calling supported) |
+| **observer** | GPU/system metrics with LLM analysis |
+
 ## Quick Commands
 
 ```bash
@@ -20,7 +69,7 @@ just run <service>       # Start a service in foreground
 just run-bg <service>    # Start a service in background
 just stop <service>      # Stop a service
 just status <service>    # Check single service health
-just status-all          # Health check all via impresario
+just status-all          # Health check all services
 
 # Development
 just sync <service>      # Install/sync dependencies
@@ -117,18 +166,17 @@ Each service in `services/<name>/` has:
 
 1. Copy an existing service dir (clap is simplest)
 2. Update `pyproject.toml` with model-specific deps
-3. Implement `api.py` (extend ModelAPI + ls.LitAPI)
-4. Update `server.py` with correct port
+3. Implement `server.py` with FastAPI endpoints
+4. Assign a port in the 2000-2099 range
 5. Add to justfile `_port` helper
 6. Add systemd unit
-7. Add to impresario's services.py
 
-## Contract with impresario
+## Service Contract
 
-- Expose `POST /predict` (params in, result out)
-- Expose `GET /health` (LitServe provides this automatically, returns "ok")
-- Listen on assigned port (2000-2099)
-- That's it. Keep coupling low.
+Each service exposes:
+- `POST /predict` - Model inference (params in, result out)
+- `GET /health` - Returns `{"status": "ok"}` when ready
+- Listens on assigned port (2000-2099)
 
 ## Port Assignments
 
@@ -198,37 +246,60 @@ If a model fails to load, fail loudly. If inference fails, return an error. Don'
 
 ## Model Weights
 
-Downloaded via HuggingFace to `/tank/halfremembered/models/`.
+Models are downloaded from HuggingFace. Default location is configured per-service.
 
 ```bash
-# Download specific model
+# Download model for a service
 just download <service>
 
 # Or use huggingface-cli directly
-huggingface-cli download <repo> --local-dir /tank/halfremembered/models/<name>
+huggingface-cli download <repo> --local-dir <your-models-dir>/<name>
 ```
+
+Check each service's `server.py` for the expected model path (usually via environment variable or config).
 
 ## Common Patterns
 
-### LitServe API
+### FastAPI Service
 
 ```python
-import litserve as ls
-from hrserve import ModelAPI
+from fastapi import FastAPI
+from pydantic import BaseModel
+import torch
 
-class MyModelAPI(ModelAPI, ls.LitAPI):
-    def setup(self, device: str):
-        self.model = load_model()
-        self.device = device
+app = FastAPI()
+model = None
 
-    def predict(self, request: dict) -> dict:
-        return {"result": self.model(request["input"])}
+@app.on_event("startup")
+def load_model():
+    global model
+    model = YourModel().to("cuda").half()  # fp16 for ROCm SDPA
+
+class PredictRequest(BaseModel):
+    input: str
+    max_tokens: int = 512
+
+@app.post("/predict")
+def predict(request: PredictRequest):
+    result = model.generate(request.input, max_tokens=request.max_tokens)
+    return {"output": result}
+
+@app.get("/health")
+def health():
+    return {"status": "ok", "service": "your-service"}
 ```
 
-### Health Endpoint
+### Loading Models (fp16 for ROCm)
 
-LitServe provides `/health` automatically - returns "ok" with HTTP 200.
-impresario checks this for service health status.
+```python
+# Load checkpoint to CPU, convert to fp16, then move to GPU
+# This avoids PyTorch allocator reserving 2x memory
+checkpoint = torch.load(path, map_location='cpu')
+model.load_state_dict(checkpoint)
+model.half()  # fp32 → fp16
+model.to('cuda')
+model.eval()
+```
 
 ### Python 3.13 + PyTorch
 
