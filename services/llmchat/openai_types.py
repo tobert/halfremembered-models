@@ -13,6 +13,47 @@ import uuid
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Multimodal Content Types (for Vision-Language models)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ImageUrl(BaseModel):
+    """Image URL or base64 data URI."""
+    url: str  # URL or "data:image/jpeg;base64,..."
+    detail: Optional[Literal["auto", "low", "high"]] = "auto"
+
+
+class ContentPartText(BaseModel):
+    """Text content part."""
+    type: Literal["text"] = "text"
+    text: str
+
+
+class ContentPartImageUrl(BaseModel):
+    """Image content part (OpenAI format)."""
+    type: Literal["image_url"] = "image_url"
+    image_url: ImageUrl
+
+
+class ContentPartImage(BaseModel):
+    """Image content part (Qwen format - URL or path directly)."""
+    type: Literal["image"] = "image"
+    image: str  # URL, file path, or base64
+
+
+class ContentPartVideo(BaseModel):
+    """Video content part (Qwen VL supports video)."""
+    type: Literal["video"] = "video"
+    video: str  # URL or file path
+
+
+# Union of all content part types
+ContentPart = Union[ContentPartText, ContentPartImageUrl, ContentPartImage, ContentPartVideo]
+
+# Message content can be string (text-only) or list of parts (multimodal)
+MessageContent = Union[str, List[ContentPart]]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Tool/Function Types
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -49,7 +90,7 @@ class ToolCall(BaseModel):
 class ChatMessage(BaseModel):
     """A message in a chat conversation."""
     role: Literal["system", "user", "assistant", "tool"]
-    content: Optional[str] = None
+    content: Optional[MessageContent] = None  # str or list of content parts
     name: Optional[str] = None  # For tool messages
     tool_calls: Optional[List[ToolCall]] = None  # For assistant messages
     tool_call_id: Optional[str] = None  # For tool messages (response to tool call)

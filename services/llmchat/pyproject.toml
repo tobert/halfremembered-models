@@ -8,12 +8,14 @@ dependencies = [
     "torchaudio",
     "torchvision",
     "pytorch-triton-rocm",
-    "transformers",
+    "transformers>=4.57.0",
     "accelerate",
+    "qwen-vl-utils",
     "fastapi",
     "uvicorn[standard]",
     "httpx",
     "numpy",
+    "pillow",
 ]
 
 [project.optional-dependencies]

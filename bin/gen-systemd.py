@@ -37,7 +37,9 @@ SERVICES: dict[str, tuple[int, str]] = {
 }
 
 # Extra environment variables per service (for service-specific config)
-SERVICE_ENV: dict[str, list[str]] = {}
+SERVICE_ENV: dict[str, list[str]] = {
+    "llmchat": ["LLMCHAT_MODEL=qwen3-vl-4b"],
+}
 
 UNIT_TEMPLATE = """\
 [Unit]
