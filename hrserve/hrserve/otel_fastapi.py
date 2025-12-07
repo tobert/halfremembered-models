@@ -29,6 +29,69 @@ class OTELContext:
         self.service_name = service_name
 
     @contextmanager
+    def start_span(
+        self,
+        operation_name: str,
+        **span_attributes,
+    ):
+        """
+        Create a span for any operation.
+
+        Alias for trace_predict that returns a span-like object.
+
+        Usage:
+            with otel.start_span("generate") as span:
+                span.set_attribute("task", "generate")
+                result = do_work()
+
+        Args:
+            operation_name: Span name
+            **span_attributes: Additional span attributes
+
+        Yields:
+            Span object (or no-op if OTEL disabled)
+        """
+        if not self.tracer:
+            yield _NoOpSpan()
+            return
+
+        with self.tracer.start_as_current_span(operation_name) as span:
+            span.set_attribute("service.name", self.service_name)
+            for key, value in span_attributes.items():
+                span.set_attribute(key, str(value))
+            yield span
+
+    def get_response_metadata(self, client_job_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Get response metadata including trace info.
+
+        Args:
+            client_job_id: Optional client job ID to include
+
+        Returns:
+            Dict with trace metadata, or None if OTEL disabled
+        """
+        if not self.tracer:
+            return None
+
+        from opentelemetry import trace
+        current_span = trace.get_current_span()
+        if not current_span or not current_span.is_recording():
+            return None
+
+        ctx = current_span.get_span_context()
+        result = {
+            "service": self.service_name,
+        }
+        if ctx.trace_id != 0:
+            result["trace_id"] = format(ctx.trace_id, "032x")
+        if ctx.span_id != 0:
+            result["span_id"] = format(ctx.span_id, "016x")
+        if client_job_id:
+            result["client_job_id"] = client_job_id
+        return result
+
+    @contextmanager
     def trace_predict(
         self,
         operation_name: str,
@@ -107,3 +170,13 @@ class _NoOpContext:
 
     def metadata(self):
         return {}
+
+
+class _NoOpSpan:
+    """No-op span when OTEL disabled."""
+
+    def set_attribute(self, key: str, value: Any):
+        pass
+
+    def add_event(self, name: str, attributes: Optional[Dict[str, Any]] = None):
+        pass

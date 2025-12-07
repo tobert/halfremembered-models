@@ -102,8 +102,9 @@ def load_single_model(model_name: str, models_dir: Path, device: torch.device) -
     else:
         model = OrpheusTransformer()
 
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    # Load checkpoint to CPU first to avoid GPU memory fragmentation
+    # Checkpoints are fp32, we convert to fp16 on CPU before moving to GPU
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     # Handle different checkpoint formats
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
@@ -112,9 +113,10 @@ def load_single_model(model_name: str, models_dir: Path, device: torch.device) -
         state_dict = checkpoint
 
     model.load_state_dict(state_dict)
-    model.to(device)
+    model.half()  # Convert fp32 → fp16 on CPU (no GPU memory allocated yet)
+    model.to(device)  # Move fp16 model to GPU
     model.eval()
 
-    logger.info(f"Loaded {model_name} model from {checkpoint_path.name}")
+    logger.info(f"Loaded {model_name} model from {checkpoint_path.name} (fp16, {sum(p.numel() for p in model.parameters())/1e6:.0f}M params)")
 
     return model

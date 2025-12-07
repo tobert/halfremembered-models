@@ -52,44 +52,53 @@ class ServiceMeta:
 
 
 # Known service characteristics
-# VRAM expectations are for fp16 with SDPA enabled
+# VRAM expectations are "warm" values (after first inference, includes KV cache)
+#
+# Orpheus models: 480M params, x_transformers architecture (2048 dim, 8 layers, 32 heads)
+# Checkpoints are fp32 (~1.9GB), loaded as fp16 (~1.0GB cold, ~1.5GB warm with KV cache)
+# Uses attn_flash=True which routes to PyTorch SDPA → works with ROCm aotriton
 SERVICE_META: dict[str, ServiceMeta] = {
     "orpheus-base": ServiceMeta(
-        model="YuanGZA/Orpheus-GPT2-v0.8",
+        model="asigalov61/Orpheus-Music-Transformer",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=0.8,  # GPT-2 small variant
+        expected_vram_gb=1.5,  # 480M params fp16 + KV cache after inference
+        note="x_transformers with SDPA, NOT GPT-2",
     ),
     "orpheus-classifier": ServiceMeta(
-        model="YuanGZA/Orpheus-Classifier",
+        model="asigalov61/Orpheus-Classifier",
         model_type="midi_generation",
         inference="single_forward",
-        note="Classifies MIDI as human/AI",
-        expected_vram_gb=0.5,
+        note="Classifies MIDI as human/AI, smaller arch (1024 dim, 8 layers)",
+        expected_vram_gb=0.7,  # Smaller model, warm after classification
     ),
     "orpheus-bridge": ServiceMeta(
-        model="YuanGZA/Orpheus-Bridge",
+        model="asigalov61/Orpheus-Bridge",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=0.8,
+        expected_vram_gb=1.7,  # Needs input context + output, higher KV cache
+        note="x_transformers with SDPA, bridge generation",
     ),
     "orpheus-loops": ServiceMeta(
-        model="YuanGZA/Orpheus-Loops",
+        model="asigalov61/Orpheus-Loops",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=0.8,
+        expected_vram_gb=1.5,
+        note="x_transformers with SDPA",
     ),
     "orpheus-children": ServiceMeta(
-        model="YuanGZA/Orpheus-Children",
+        model="asigalov61/Orpheus-Children",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=0.8,
+        expected_vram_gb=1.5,
+        note="x_transformers with SDPA",
     ),
     "orpheus-mono": ServiceMeta(
-        model="YuanGZA/Orpheus-Mono",
+        model="asigalov61/Orpheus-Mono",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=0.8,
+        expected_vram_gb=1.5,
+        note="x_transformers with SDPA",
     ),
     "yue": ServiceMeta(
         model="m-a-p/YuE-s1-7B + YuE-s2-1B",
@@ -102,7 +111,7 @@ SERVICE_META: dict[str, ServiceMeta] = {
         model="facebook/musicgen-medium",
         model_type="audio_generation",
         inference="autoregressive",
-        expected_vram_gb=3.5,  # 1.5B params + EnCodec
+        expected_vram_gb=3.6,  # 1.5B params + EnCodec, warm after generation
     ),
     "clap": ServiceMeta(
         model="laion/larger_clap_music",

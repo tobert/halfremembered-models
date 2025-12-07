@@ -190,6 +190,15 @@ class YuEEngine:
         vocals_stage2 = self._stage2_inference(vocals_npy, stage2_batch_size)
         instrumentals_stage2 = self._stage2_inference(instrumentals_npy, stage2_batch_size)
 
+        # Check if we have enough tokens to decode (codec kernel requires at least 7 frames)
+        min_frames = 10  # Safe minimum for codec decoder
+        if vocals_stage2.shape[-1] < min_frames or instrumentals_stage2.shape[-1] < min_frames:
+            raise ValueError(
+                f"Generated audio too short to decode. "
+                f"Vocals: {vocals_stage2.shape[-1]} frames, Instrumentals: {instrumentals_stage2.shape[-1]} frames. "
+                f"Need at least {min_frames} frames. Try increasing max_new_tokens to 3000+."
+            )
+
         # Decode to audio
         logger.info("Decoding to audio...")
         vocal_audio = self._decode_audio(vocals_stage2)
@@ -373,6 +382,18 @@ class YuEEngine:
         prompt = stage1_output.astype(np.int32)
         output_duration = prompt.shape[-1] // 50 // 6 * 6
         num_batch = output_duration // 6
+
+        # Guard against empty/short outputs (need at least 6s of semantic tokens = 300 tokens)
+        if num_batch == 0:
+            token_count = prompt.shape[-1]
+            duration_sec = token_count / 50
+            logger.warning(
+                f"Stage 1 output too short: {token_count} tokens ({duration_sec:.1f}s). "
+                f"Need at least 300 tokens (6s) for Stage 2. Try increasing max_new_tokens."
+            )
+            # Return empty array with correct shape for downstream processing
+            # This will produce silence but won't crash
+            return np.zeros((8, 0), dtype=np.int32)
 
         if num_batch <= batch_size:
             # Infer entire prompt at once
