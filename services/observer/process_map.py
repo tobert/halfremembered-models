@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
+
+import httpx
 
 
 # Static port → service mapping
@@ -42,76 +44,99 @@ class ServiceMeta:
     model_type: Literal["midi_generation", "audio_generation", "text_generation", "embedding", "beat_detection", "observability"]
     inference: Literal["autoregressive", "two_stage", "single_forward", "hybrid"]
     note: str = ""
+    # Optimization expectations
+    uses_attention: bool = True  # Does this model use self-attention?
+    sdpa_compatible: bool = True  # Should use SDPA on ROCm?
+    expected_vram_gb: float | None = None  # Expected VRAM footprint when optimized
+    fp16_expected: bool = True  # Should be running in fp16?
 
 
 # Known service characteristics
+# VRAM expectations are for fp16 with SDPA enabled
 SERVICE_META: dict[str, ServiceMeta] = {
     "orpheus-base": ServiceMeta(
         model="YuanGZA/Orpheus-GPT2-v0.8",
         model_type="midi_generation",
         inference="autoregressive",
+        expected_vram_gb=0.8,  # GPT-2 small variant
     ),
     "orpheus-classifier": ServiceMeta(
         model="YuanGZA/Orpheus-Classifier",
         model_type="midi_generation",
         inference="single_forward",
         note="Classifies MIDI as human/AI",
+        expected_vram_gb=0.5,
     ),
     "orpheus-bridge": ServiceMeta(
         model="YuanGZA/Orpheus-Bridge",
         model_type="midi_generation",
         inference="autoregressive",
+        expected_vram_gb=0.8,
     ),
     "orpheus-loops": ServiceMeta(
         model="YuanGZA/Orpheus-Loops",
         model_type="midi_generation",
         inference="autoregressive",
+        expected_vram_gb=0.8,
     ),
     "orpheus-children": ServiceMeta(
         model="YuanGZA/Orpheus-Children",
         model_type="midi_generation",
         inference="autoregressive",
+        expected_vram_gb=0.8,
     ),
     "orpheus-mono": ServiceMeta(
         model="YuanGZA/Orpheus-Mono",
         model_type="midi_generation",
         inference="autoregressive",
+        expected_vram_gb=0.8,
     ),
     "yue": ServiceMeta(
         model="m-a-p/YuE-s1-7B + YuE-s2-1B",
         model_type="audio_generation",
         inference="two_stage",
-        note="stage1=semantic tokens, stage2=acoustic tokens",
+        note="stage1=7B semantic, stage2=1B acoustic, both loaded",
+        expected_vram_gb=18.0,  # 7B + 1B in fp16, plus KV cache
     ),
     "musicgen": ServiceMeta(
         model="facebook/musicgen-medium",
         model_type="audio_generation",
         inference="autoregressive",
+        expected_vram_gb=3.5,  # 1.5B params + EnCodec
     ),
     "clap": ServiceMeta(
         model="laion/larger_clap_music",
         model_type="embedding",
         inference="single_forward",
+        expected_vram_gb=1.2,
     ),
     "beat-this": ServiceMeta(
         model="CPJKU/beat-this",
         model_type="beat_detection",
         inference="single_forward",
+        uses_attention=False,  # TCN-based, no self-attention
+        sdpa_compatible=False,
+        expected_vram_gb=0.3,
     ),
     "llmchat": ServiceMeta(
         model="Qwen/Qwen2.5-7B-Instruct",
         model_type="text_generation",
         inference="autoregressive",
+        expected_vram_gb=15.0,  # 7B in fp16 + KV cache
+        note="GQA attention, benefits heavily from SDPA",
     ),
     "anticipatory": ServiceMeta(
         model="stanford-crfm/music-medium-800k",
         model_type="midi_generation",
         inference="autoregressive",
+        expected_vram_gb=2.5,  # 800M params
     ),
     "observer": ServiceMeta(
         model="Qwen/Qwen3-VL-4B-Instruct",
         model_type="observability",
         inference="autoregressive",
+        expected_vram_gb=0.0,  # Uses llmchat, doesn't load its own model
+        uses_attention=False,  # No local model
     ),
 }
 
@@ -145,9 +170,19 @@ class ServiceProcess:
         else:
             return "large"
 
+    @property
+    def vram_delta_pct(self) -> float | None:
+        """Percent deviation from expected VRAM (positive = using more than expected)."""
+        if not self.meta or not self.meta.expected_vram_gb:
+            return None
+        expected = self.meta.expected_vram_gb
+        if expected == 0:
+            return None
+        return ((self.vram_gb - expected) / expected) * 100
+
     def to_dict(self) -> dict:
         """Convert to dict for JSON serialization."""
-        return {
+        result = {
             "name": self.name,
             "pid": self.pid,
             "port": self.port,
@@ -155,8 +190,13 @@ class ServiceProcess:
             "vram_pct": round(self.vram_pct, 1),
             "size_class": self.size_class,
             "model": self.meta.model if self.meta else None,
-            "bottleneck": self.meta.bottleneck if self.meta else None,
         }
+        if self.meta:
+            result["expected_vram_gb"] = self.meta.expected_vram_gb
+            result["vram_delta_pct"] = round(self.vram_delta_pct, 1) if self.vram_delta_pct else None
+            result["uses_attention"] = self.meta.uses_attention
+            result["sdpa_compatible"] = self.meta.sdpa_compatible
+        return result
 
 
 def get_listening_pids() -> dict[int, int]:
@@ -272,6 +312,21 @@ def get_gpu_memory_by_pid() -> dict[int, int]:
     return pid_to_vram
 
 
+def _query_llmchat_model() -> str | None:
+    """Query llmchat's /v1/models to get currently loaded model."""
+    try:
+        resp = httpx.get("http://localhost:2020/v1/models", timeout=2.0)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("data"):
+            model_id = data["data"][0].get("id", "")
+            # Extract model name from path like /tank/.../Qwen3-VL-4B-Instruct
+            return model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
+    except Exception:
+        pass
+    return None
+
+
 def build_process_map() -> dict[str, ServiceProcess]:
     """
     Build complete service → process mapping with VRAM usage.
@@ -281,12 +336,20 @@ def build_process_map() -> dict[str, ServiceProcess]:
     port_to_pid = get_listening_pids()
     pid_to_vram = get_gpu_memory_by_pid()
 
+    # Dynamic model discovery for llmchat
+    llmchat_model = _query_llmchat_model()
+
     processes = {}
     for port, service in PORT_TO_SERVICE.items():
         pid = port_to_pid.get(port)
         if pid:
             vram_bytes = pid_to_vram.get(pid, 0)
             meta = SERVICE_META.get(service)
+
+            # Override llmchat model with dynamically discovered value
+            if service == "llmchat" and llmchat_model and meta:
+                meta = replace(meta, model=llmchat_model)
+
             processes[service] = ServiceProcess(
                 name=service,
                 pid=pid,
@@ -305,17 +368,43 @@ def get_total_service_vram() -> float:
 
 
 def format_process_map_for_llm(processes: dict[str, ServiceProcess]) -> str:
-    """Format process map as a compact string for LLM context."""
+    """Format process map as terminal-friendly text (80-120 char width)."""
     if not processes:
         return "No services running"
 
-    lines = ["| Service | VRAM | Type |", "|---------|------|------|"]
+    lines = ["## Active Models"]
+    # Fixed-width columns: name(18) vram(7) expected(7) delta(7) model(~40)
+    lines.append(f"{'SERVICE':<18} {'VRAM':>6} {'EXPECT':>6} {'Δ%':>6}  MODEL")
+    lines.append("─" * 80)
+
     for name, proc in sorted(processes.items(), key=lambda x: -x[1].vram_bytes):
-        model_type = proc.meta.model_type if proc.meta else "unknown"
-        lines.append(f"| {name} | {proc.vram_gb:.1f} GB | {model_type} |")
+        model = (proc.meta.model if proc.meta else "unknown")[:38]
+        expected = f"{proc.meta.expected_vram_gb:.1f}G" if proc.meta and proc.meta.expected_vram_gb else "?"
+        delta = proc.vram_delta_pct
+        delta_str = f"{delta:+.0f}%" if delta is not None else "n/a"
+        # Add warning indicator for significant deviations
+        flag = "⚠" if delta and delta > 50 else " "
+        lines.append(f"{name:<18} {proc.vram_gb:5.1f}G {expected:>6} {delta_str:>6} {flag}{model}")
 
     total = sum(p.vram_gb for p in processes.values())
-    lines.append(f"\n**Total service VRAM**: {total:.1f} GB")
+    attention_count = len([p for p in processes.values() if p.meta and p.meta.uses_attention])
+    lines.append("─" * 80)
+    lines.append(f"Total: {total:.1f}GB across {len(processes)} services ({attention_count} use attention/SDPA)")
+
+    # Flag potential issues in a compact list
+    issues = []
+    for name, proc in sorted(processes.items(), key=lambda x: -x[1].vram_bytes):
+        if proc.meta and proc.meta.expected_vram_gb and proc.vram_delta_pct:
+            if proc.vram_delta_pct > 100:
+                issues.append(f"  ⚠ {name}: +{proc.vram_delta_pct:.0f}% → likely fp32 + eager attn")
+            elif proc.vram_delta_pct > 50:
+                issues.append(f"  ⚠ {name}: +{proc.vram_delta_pct:.0f}% → possible fp32")
+            elif proc.vram_delta_pct < -30:
+                issues.append(f"  ℹ {name}: {proc.vram_delta_pct:.0f}% → quantized?")
+
+    if issues:
+        lines.append("\nOptimization notes:")
+        lines.extend(issues)
 
     return "\n".join(lines)
 
@@ -339,4 +428,6 @@ if __name__ == "__main__":
             print(f"    VRAM: {proc.vram_gb:.2f} GB ({proc.size_class})")
             if proc.meta:
                 print(f"    Model: {proc.meta.model}")
-                print(f"    Bottleneck: {proc.meta.bottleneck}")
+                print(f"    Inference: {proc.meta.inference}")
+                if proc.vram_delta_pct is not None:
+                    print(f"    VRAM delta: {proc.vram_delta_pct:+.0f}%")

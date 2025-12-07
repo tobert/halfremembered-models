@@ -20,14 +20,14 @@ from datetime import datetime
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 from gpu_collector import get_gpu_buffer, GpuSample
 from gpu_metrics import read_gpu_metrics
 from system_collector import get_system_buffer, read_system_sample
-from process_map import build_process_map
+from process_map import build_process_map, format_process_map_for_llm
 from heuristics import analyze_combined, VRAM_TOTAL_GB
 
 
@@ -288,18 +288,25 @@ def build_snapshot() -> dict[str, Any]:
     # Build sparklines from history
     sparklines = build_sparklines(gpu_history)
 
-    # Build services list
-    services = [
-        {
+    # Build services list with optimization metadata
+    services = []
+    for name, proc in sorted(processes.items(), key=lambda x: -x[1].vram_bytes):
+        if proc.vram_gb < 0.1:
+            continue
+        svc = {
             "name": name,
             "port": proc.port,
             "vram_gb": round(proc.vram_gb, 1),
             "model": proc.meta.model if proc.meta else None,
             "type": proc.meta.model_type if proc.meta else None,
         }
-        for name, proc in sorted(processes.items(), key=lambda x: -x[1].vram_bytes)
-        if proc.vram_gb > 0.1
-    ]
+        if proc.meta:
+            svc["expected_vram_gb"] = proc.meta.expected_vram_gb
+            svc["vram_delta_pct"] = round(proc.vram_delta_pct, 1) if proc.vram_delta_pct else None
+            svc["uses_attention"] = proc.meta.uses_attention
+            svc["sdpa_compatible"] = proc.meta.sdpa_compatible
+            svc["inference"] = proc.meta.inference
+        services.append(svc)
 
     total_service_vram = sum(s["vram_gb"] for s in services)
 
@@ -395,24 +402,10 @@ def format_metrics_text(snapshot: dict[str, Any]) -> str:
     lines.append(f"memory: {system['mem_available_gb']:.1f}/{system['mem_total_gb']:.0f}GB available ({system['mem_pressure']} pressure)")
     lines.append(f"swap: {system['swap_used_gb']:.1f}GB | load: {system['load_1m']}")
 
-    # Services
-    total_vram = sum(s["vram_gb"] for s in services)
+    # Services - use the rich LLM format
     lines.append("")
-    lines.append(f"## Services ({len(services)} running, {total_vram:.1f}GB total)")
-
-    if services:
-        # Header
-        lines.append(f"{'name':<18} {'vram':>6} {'type':<18} model")
-        for s in services[:10]:  # Top 10 by VRAM
-            name = s["name"][:17]
-            vram = f"{s['vram_gb']:.1f}GB"
-            stype = (s.get("type") or "unknown")[:17]
-            model = (s.get("model") or "")[:30]
-            lines.append(f"{name:<18} {vram:>6} {stype:<18} {model}")
-        if len(services) > 10:
-            remaining = len(services) - 10
-            remaining_vram = sum(s["vram_gb"] for s in services[10:])
-            lines.append(f"... +{remaining} more ({remaining_vram:.1f}GB)")
+    processes = build_process_map()
+    lines.append(format_process_map_for_llm(processes))
 
     # Notes
     if notes:
@@ -511,53 +504,67 @@ class PredictRequest(BaseModel):
 LLMCHAT_URL = "http://localhost:2020/v1/chat/completions"
 DEFAULT_MODEL = "qwen3-vl-4b"
 
-SYSTEM_PROMPT = """You are a statistical data analyst for GPU/system telemetry.
+SYSTEM_PROMPT = """You are a statistical data analyst for GPU/system telemetry on a ROCm-based ML inference system.
 Audience: Engineers and LLMs who will interpret meaning themselves.
 
-Hardware context (for reference, not for recommendations):
+## Hardware Context
 - AMD Radeon 8060S (RDNA 3.5, gfx1151) integrated APU
 - 96GB unified VRAM (shared CPU/GPU)
-- ~240 GB/s peak memory bandwidth
+- ~240 GB/s peak memory bandwidth (this is the bottleneck for LLM inference)
+- ROCm with aotriton for flash attention
 
-Your job:
-- Summarize current state with key statistics
-- Note anomalies or outliers (values >2σ from recent mean, unexpected patterns)
-- Express confidence levels (high/moderate/low) for observations
-- Report, don't recommend - let readers decide what matters
+## ROCm Optimization Knowledge
+SDPA (Scaled Dot-Product Attention) is critical for transformer performance on ROCm:
+- Models using `attn_implementation="sdpa"` get flash/memory-efficient attention via aotriton
+- Without SDPA: falls back to slow math kernels, ~2-3x slower, higher VRAM
+- VRAM hints: fp16 models use ~2 bytes/param; fp32 uses ~4 bytes/param
+- If VRAM is ~2x expected, model likely running in fp32 (missing optimization)
+- If VRAM is close to expected, model likely optimized (fp16 + SDPA)
 
-Output format:
+## Your Job
+1. Summarize current state with key statistics
+2. **Identify active models** from the service list and their HuggingFace repos
+3. **Assess optimization status** by comparing actual vs expected VRAM:
+   - Within ±20%: likely optimized (fp16/SDPA)
+   - 50-100% over: probably fp32, missing dtype optimization
+   - >100% over: possibly fp32 + eager attention (double penalty)
+   - Under expected: possibly quantized or partial load
+4. Note anomalies or outliers (>2σ from mean)
+5. Express confidence levels (high/moderate/low)
+
+## Output Format (terminal-friendly, 80 chars wide, NO markdown tables)
 
 ## State
-Key GPU parameters:
-- util: [current]% (60s: mean [x], peak [y], σ [z])
-- temp: [current]°C (60s: mean [x], Δ [change])
-- power: [current]W (60s: mean [x], peak [y])
-- vram: [used]/[total]GB ([percent]%)
-- bandwidth: [current] GB/s (of ~240 peak)
-System: [mem available]GB free, [pressure] pressure, load [x]
-Services: [count] loaded, [total]GB VRAM
+GPU: [util]% [status] | [vram] | [temp] | [power] | bw:[bandwidth]
+Sys: [mem]GB free | load [x] | [pressure] pressure
+
+## Models ([count] active, [total]GB)
+[For each model, one line:]
+  [name]: [model_id] — [vram]GB ([delta]% vs expected) → [optimization guess]
 
 ## Observations
-- [metric]: [observation with statistical context]
-- ...
+- [bullet points, not tables]
 
-## Anomalies
-[Anything unusual with confidence level, or "None detected (high confidence)"]
+## Optimization Assessment
+[1-2 sentences: overall status + confidence]
 
-## Confidence
-[Data quality/certainty statement]
-
-Be precise and clinical. Use confidence language ("likely", "appears to", "uncertain").
-Do not make recommendations. Report what you observe."""
+Use plain text, fixed-width alignment, bullets. NO markdown tables.
+Be precise and clinical. Use evidence-based reasoning.
+"VRAM +48% suggests fp32" is better than "might not be optimized"."""
 
 
 @app.post("/predict")
-async def predict(request: PredictRequest):
+async def predict(
+    req: Request,
+    request: PredictRequest = Body(default=PredictRequest()),
+):
     """
     LLM-powered analysis of current GPU/system state.
 
     If no prompt is provided, generates a general status report.
+    Accepts: application/json (default) or text/plain for raw analysis.
     """
+    wants_text = req.headers.get("accept", "").startswith("text/plain")
     snapshot = build_snapshot()
 
     # Use the text metrics format as context
@@ -586,11 +593,15 @@ async def predict(request: PredictRequest):
             response.raise_for_status()
             data = response.json()
             analysis = data["choices"][0]["message"]["content"]
+            model_used = data.get("model", DEFAULT_MODEL)
             latency_ms = (time.time() - start) * 1000
+
+            if wants_text:
+                return PlainTextResponse(f"{analysis}\n\n---\nmodel: {model_used}")
 
             return {
                 "analysis": analysis,
-                "model": DEFAULT_MODEL,
+                "model": model_used,
                 "latency_ms": round(latency_ms, 1),
                 "_links": {
                     "self": "/predict",
