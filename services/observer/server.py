@@ -3,25 +3,34 @@ Observer service - ROCm GPU observability agent.
 
 Port: 2099
 
-Provides quick status and LLM-generated reports about GPU state.
+Minimal HATEOAS API:
+  GET  /health              Health check
+  GET  /                    Current snapshot + sparklines + links
+  GET  /metrics             LLM-optimized text format with sparklines
+  GET  /history?seconds=60  Raw historical samples
+  POST /predict             LLM analysis with optional custom prompt
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
+from typing import Any
 
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import PlainTextResponse
+from pydantic import BaseModel
 
-from gpu_collector import get_gpu_buffer, gpu_polling_loop, GpuSample
+from gpu_collector import get_gpu_buffer, GpuSample
+from gpu_metrics import read_gpu_metrics
 from system_collector import get_system_buffer, read_system_sample
-from process_map import build_process_map, format_process_map_for_llm
+from process_map import build_process_map
 from heuristics import analyze_combined, VRAM_TOTAL_GB
 
 
-# Background task handle
 _polling_task: asyncio.Task | None = None
 
 
@@ -30,22 +39,18 @@ async def lifespan(app: FastAPI):
     """Start background polling on startup."""
     global _polling_task
 
-    # Initialize buffers
     gpu_buffer = get_gpu_buffer()
     system_buffer = get_system_buffer()
 
-    # Take initial samples
     gpu_buffer.sample()
     system_buffer.sample()
 
-    # Start polling loop
     _polling_task = asyncio.create_task(polling_loop())
 
     print(f"Observer started - GPU: card{gpu_buffer.device.card_num}, hwmon{gpu_buffer.device.hwmon_num}")
 
     yield
 
-    # Cleanup
     if _polling_task:
         _polling_task.cancel()
         try:
@@ -71,120 +76,409 @@ async def polling_loop(interval: float = 1.0):
 app = FastAPI(
     title="Observer",
     description="ROCm GPU observability agent",
-    version="0.1.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
 
-@app.get("/health")
-async def health():
-    """Health check endpoint."""
-    return "ok"
+# =============================================================================
+# Sparkline Generation
+# =============================================================================
+
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
 
 
-@app.get("/status")
-async def status():
+def sparkline(values: list[float], min_val: float, max_val: float, width: int = 10) -> str:
     """
-    Quick GPU status - no LLM, just heuristics.
+    Generate a Unicode sparkline from values.
 
-    Returns current GPU state with analysis.
+    Args:
+        values: List of numeric values
+        min_val: Minimum value for scaling (e.g., 0 for percentages)
+        max_val: Maximum value for scaling (e.g., 100 for percentages)
+        width: Number of characters in output (samples are bucketed)
+
+    Returns:
+        String of Unicode block characters representing the data
     """
+    if not values:
+        return "╌" * width
+
+    # Bucket values into width bins
+    if len(values) <= width:
+        bucketed = values
+    else:
+        bucket_size = len(values) / width
+        bucketed = []
+        for i in range(width):
+            start = int(i * bucket_size)
+            end = int((i + 1) * bucket_size)
+            bucket = values[start:end]
+            if bucket:
+                bucketed.append(sum(bucket) / len(bucket))
+
+    # Scale to sparkline characters
+    range_val = max_val - min_val
+    if range_val == 0:
+        return SPARK_CHARS[4] * len(bucketed)
+
+    result = []
+    for v in bucketed:
+        normalized = (v - min_val) / range_val
+        normalized = max(0, min(1, normalized))
+        idx = int(normalized * (len(SPARK_CHARS) - 1))
+        result.append(SPARK_CHARS[idx])
+
+    return "".join(result)
+
+
+def _stddev(values: list[float]) -> float:
+    """Calculate standard deviation."""
+    if len(values) < 2:
+        return 0.0
+    mean = sum(values) / len(values)
+    variance = sum((x - mean) ** 2 for x in values) / len(values)
+    return variance ** 0.5
+
+
+def build_sparklines(samples: list[GpuSample], width: int = 10) -> dict[str, Any]:
+    """
+    Build sparkline data from GPU samples.
+
+    Returns dict with raw values, rendered sparklines, and statistics.
+    """
+    if not samples:
+        return {}
+
+    util_vals = [s.gpu_util_pct for s in samples]
+    temp_vals = [s.temp_c for s in samples]
+    power_vals = [s.power_w for s in samples]
+    vram_vals = [s.vram_used_gb for s in samples]
+
+    return {
+        "util": {
+            "values": util_vals,
+            "min": 0,
+            "max": 100,
+            "current": util_vals[-1] if util_vals else 0,
+            "peak": max(util_vals) if util_vals else 0,
+            "avg": round(sum(util_vals) / len(util_vals), 1) if util_vals else 0,
+            "stddev": round(_stddev(util_vals), 2),
+            "spark": sparkline(util_vals, 0, 100, width),
+        },
+        "temp": {
+            "values": temp_vals,
+            "min": 20,
+            "max": 85,
+            "current": round(temp_vals[-1], 1) if temp_vals else 0,
+            "peak": round(max(temp_vals), 1) if temp_vals else 0,
+            "avg": round(sum(temp_vals) / len(temp_vals), 1) if temp_vals else 0,
+            "stddev": round(_stddev(temp_vals), 2),
+            "delta": round(temp_vals[-1] - temp_vals[0], 1) if len(temp_vals) > 1 else 0,
+            "spark": sparkline(temp_vals, 20, 85, width),
+        },
+        "power": {
+            "values": power_vals,
+            "min": 0,
+            "max": 120,
+            "current": round(power_vals[-1], 1) if power_vals else 0,
+            "peak": round(max(power_vals), 1) if power_vals else 0,
+            "avg": round(sum(power_vals) / len(power_vals), 1) if power_vals else 0,
+            "stddev": round(_stddev(power_vals), 2),
+            "spark": sparkline(power_vals, 0, 120, width),
+        },
+        "vram": {
+            "values": vram_vals,
+            "min": 0,
+            "max": VRAM_TOTAL_GB,
+            "current": round(vram_vals[-1], 1) if vram_vals else 0,
+            "peak": round(max(vram_vals), 1) if vram_vals else 0,
+            "avg": round(sum(vram_vals) / len(vram_vals), 1) if vram_vals else 0,
+            "stddev": round(_stddev(vram_vals), 2),
+            "spark": sparkline(vram_vals, 0, VRAM_TOTAL_GB, width),
+        },
+        "window_seconds": 60,
+        "sample_count": len(samples),
+    }
+
+
+def compute_trends(samples: list[GpuSample], window_seconds: int = 30) -> dict[str, str]:
+    """Compute trends from recent samples."""
+    if not samples or len(samples) < 5:
+        return {"temp": "unknown", "power": "unknown", "activity": "unknown"}
+
+    cutoff = time.time() - window_seconds
+    recent = [s for s in samples if s.timestamp >= cutoff]
+
+    if len(recent) < 3:
+        return {"temp": "stable", "power": "stable", "activity": "steady"}
+
+    n = len(recent)
+    first = recent[:n//3]
+    last = recent[-n//3:]
+
+    if not first or not last:
+        return {"temp": "stable", "power": "stable", "activity": "steady"}
+
+    first_temp = sum(s.temp_c for s in first) / len(first)
+    last_temp = sum(s.temp_c for s in last) / len(last)
+    temp_delta = last_temp - first_temp
+
+    if temp_delta > 3:
+        temp_trend = "rising"
+    elif temp_delta < -3:
+        temp_trend = "cooling"
+    else:
+        temp_trend = "stable"
+
+    first_power = sum(s.power_w for s in first) / len(first)
+    last_power = sum(s.power_w for s in last) / len(last)
+    power_delta = last_power - first_power
+
+    if power_delta > 10:
+        power_trend = "increasing"
+    elif power_delta < -10:
+        power_trend = "decreasing"
+    else:
+        power_trend = "stable"
+
+    first_util = sum(s.gpu_util_pct for s in first) / len(first)
+    last_util = sum(s.gpu_util_pct for s in last) / len(last)
+    util_delta = last_util - first_util
+
+    if util_delta > 20:
+        activity = "ramping_up"
+    elif util_delta < -20:
+        activity = "winding_down"
+    else:
+        activity = "steady"
+
+    return {"temp": temp_trend, "power": power_trend, "activity": activity}
+
+
+# =============================================================================
+# Snapshot Builder
+# =============================================================================
+
+def build_snapshot() -> dict[str, Any]:
+    """Build complete current state snapshot with sparklines."""
     gpu_buffer = get_gpu_buffer()
     system_buffer = get_system_buffer()
 
     gpu = gpu_buffer.current()
-    system = system_buffer.current() or read_system_sample()
-
     if not gpu:
-        return {"error": "No GPU samples yet"}
+        gpu = gpu_buffer.sample()
 
-    # Get recent history for trend analysis
+    system = system_buffer.current() or read_system_sample()
     gpu_history = gpu_buffer.window(60)
-
-    # Run analysis
+    processes = build_process_map()
     analysis = analyze_combined(gpu, system, gpu_history)
 
-    # Get process map
-    processes = build_process_map()
+    # Get extended metrics if available
+    rich_metrics = read_gpu_metrics()
+    bandwidth_gbs = None
+    if rich_metrics and rich_metrics.dram_total_bandwidth_gbs:
+        bandwidth_gbs = round(rich_metrics.dram_total_bandwidth_gbs, 1)
+
+    # Use gfx_activity from gpu_metrics if available (more accurate)
+    util_pct = gpu.gpu_util_pct
+    if rich_metrics and rich_metrics.gfx_activity_pct is not None:
+        util_pct = round(rich_metrics.gfx_activity_pct, 1)
+
+    # Build sparklines from history
+    sparklines = build_sparklines(gpu_history)
+
+    # Build services list
+    services = [
+        {
+            "name": name,
+            "port": proc.port,
+            "vram_gb": round(proc.vram_gb, 1),
+            "model": proc.meta.model if proc.meta else None,
+            "type": proc.meta.model_type if proc.meta else None,
+        }
+        for name, proc in sorted(processes.items(), key=lambda x: -x[1].vram_bytes)
+        if proc.vram_gb > 0.1
+    ]
+
+    total_service_vram = sum(s["vram_gb"] for s in services)
+
+    # One-line summary
+    summary = (
+        f"GPU {analysis.gpu.status} {util_pct}% | "
+        f"{gpu.vram_used_gb:.1f}/{VRAM_TOTAL_GB:.0f}GB | "
+        f"{gpu.temp_c:.0f}°C | "
+        f"{len(services)} services {total_service_vram:.0f}GB | "
+        f"{analysis.overall_health}"
+    )
 
     return {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.fromtimestamp(gpu.timestamp).isoformat(),
+        "summary": summary,
         "health": analysis.overall_health,
-        "summary": analysis.summary,
         "gpu": {
             "status": analysis.gpu.status,
             "vram_used_gb": round(gpu.vram_used_gb, 1),
-            "vram_total_gb": round(VRAM_TOTAL_GB, 0),
-            "vram_pct": round(gpu.vram_pct, 1),
-            "util_pct": gpu.gpu_util_pct,
+            "vram_total_gb": VRAM_TOTAL_GB,
+            "util_pct": util_pct,
             "temp_c": round(gpu.temp_c, 1),
             "power_w": round(gpu.power_w, 1),
-            "freq_ghz": round(gpu.freq_ghz, 2),
+            "bandwidth_gbs": bandwidth_gbs,
             "bottleneck": analysis.gpu.bottleneck,
             "oom_risk": analysis.gpu.oom_risk,
-            "temp_trend": analysis.gpu.temp_trend,
         },
         "system": {
             "mem_available_gb": round(system.mem_available_gb, 1),
-            "mem_pressure": analysis.system.mem_pressure,
+            "mem_total_gb": round(system.mem_total_gb, 1),
+            "mem_pressure": system.mem_pressure,
             "swap_used_gb": round(system.swap_used_gb, 1),
-            "swap_active": analysis.system.swap_active,
             "load_1m": round(system.load_1m, 2),
-            "cpu_pressure": analysis.system.cpu_pressure,
         },
-        "services": {
-            name: proc.to_dict()
-            for name, proc in processes.items()
-        },
+        "services": services,
+        "sparklines": sparklines,
+        "trends": compute_trends(gpu_history),
         "notes": analysis.gpu.notes + analysis.system.notes,
     }
 
 
-@app.get("/status/compact", response_class=PlainTextResponse)
-async def status_compact():
+# =============================================================================
+# Text Metrics Format
+# =============================================================================
+
+def format_metrics_text(snapshot: dict[str, Any]) -> str:
     """
-    Compact one-line status for shell scripts / prompts.
+    Format snapshot as LLM-optimized text with sparklines.
+
+    Compact, self-describing, easy to parse.
     """
-    gpu_buffer = get_gpu_buffer()
-    gpu = gpu_buffer.current()
+    ts = snapshot["timestamp"]
+    gpu = snapshot["gpu"]
+    system = snapshot["system"]
+    services = snapshot["services"]
+    sparks = snapshot.get("sparklines", {})
+    trends = snapshot["trends"]
+    notes = snapshot.get("notes", [])
 
-    if not gpu:
-        return "GPU: no data"
+    lines = [
+        f"# Observer {ts}",
+        f"health: {snapshot['health']}",
+        "",
+        "## GPU (60s history)",
+    ]
 
-    system = read_system_sample()
-    analysis = analyze_combined(gpu, system)
+    # GPU metrics with sparklines and statistics
+    if sparks:
+        u = sparks.get("util", {})
+        t = sparks.get("temp", {})
+        p = sparks.get("power", {})
+        v = sparks.get("vram", {})
 
-    # One-liner format
-    return (
-        f"GPU: {analysis.gpu.status} | "
-        f"{gpu.vram_used_gb:.0f}/{VRAM_TOTAL_GB:.0f}GB | "
-        f"{gpu.gpu_util_pct}% | "
-        f"{gpu.temp_c:.0f}°C | "
-        f"{analysis.overall_health}"
-    )
+        lines.append(f"util:  {gpu['util_pct']:5.1f}% {u.get('spark', '')} avg:{u.get('avg', 0):.1f} peak:{u.get('peak', 0):.0f} σ:{u.get('stddev', 0):.2f}")
+        lines.append(f"temp:  {gpu['temp_c']:5.1f}°C {t.get('spark', '')} avg:{t.get('avg', 0):.1f} peak:{t.get('peak', 0):.0f} σ:{t.get('stddev', 0):.2f} Δ{t.get('delta', 0):+.1f}")
+        lines.append(f"power: {gpu['power_w']:5.1f}W {p.get('spark', '')} avg:{p.get('avg', 0):.1f} peak:{p.get('peak', 0):.0f} σ:{p.get('stddev', 0):.2f}")
+        lines.append(f"vram:  {gpu['vram_used_gb']:5.1f}GB {v.get('spark', '')} /{VRAM_TOTAL_GB:.0f}GB ({gpu['vram_used_gb']/VRAM_TOTAL_GB*100:.0f}%) σ:{v.get('stddev', 0):.2f}")
+    else:
+        lines.append(f"util:  {gpu['util_pct']}%")
+        lines.append(f"temp:  {gpu['temp_c']}°C")
+        lines.append(f"power: {gpu['power_w']}W")
+        lines.append(f"vram:  {gpu['vram_used_gb']}/{VRAM_TOTAL_GB}GB")
+
+    if gpu.get("bandwidth_gbs"):
+        lines.append(f"membw: {gpu['bandwidth_gbs']} GB/s")
+
+    lines.append(f"oom_risk: {gpu['oom_risk']}")
+    lines.append(f"trends: temp {trends['temp']}, power {trends['power']}, activity {trends['activity']}")
+
+    # System
+    lines.append("")
+    lines.append("## System")
+    lines.append(f"memory: {system['mem_available_gb']:.1f}/{system['mem_total_gb']:.0f}GB available ({system['mem_pressure']} pressure)")
+    lines.append(f"swap: {system['swap_used_gb']:.1f}GB | load: {system['load_1m']}")
+
+    # Services
+    total_vram = sum(s["vram_gb"] for s in services)
+    lines.append("")
+    lines.append(f"## Services ({len(services)} running, {total_vram:.1f}GB total)")
+
+    if services:
+        # Header
+        lines.append(f"{'name':<18} {'vram':>6} {'type':<18} model")
+        for s in services[:10]:  # Top 10 by VRAM
+            name = s["name"][:17]
+            vram = f"{s['vram_gb']:.1f}GB"
+            stype = (s.get("type") or "unknown")[:17]
+            model = (s.get("model") or "")[:30]
+            lines.append(f"{name:<18} {vram:>6} {stype:<18} {model}")
+        if len(services) > 10:
+            remaining = len(services) - 10
+            remaining_vram = sum(s["vram_gb"] for s in services[10:])
+            lines.append(f"... +{remaining} more ({remaining_vram:.1f}GB)")
+
+    # Notes
+    if notes:
+        lines.append("")
+        lines.append("## Notes")
+        for note in notes:
+            lines.append(f"- {note}")
+
+    return "\n".join(lines)
 
 
-@app.get("/services")
-async def services():
-    """List running services with VRAM usage."""
-    processes = build_process_map()
-    return {
-        "services": {name: proc.to_dict() for name, proc in processes.items()},
-        "total_vram_gb": round(sum(p.vram_gb for p in processes.values()), 1),
-        "service_count": len(processes),
+# =============================================================================
+# Endpoints
+# =============================================================================
+
+@app.get("/health")
+async def health():
+    """Health check."""
+    return "ok"
+
+
+@app.get("/")
+async def root():
+    """
+    Current system snapshot with HATEOAS links.
+
+    Includes summary, sparklines, and full structured data.
+    """
+    snapshot = build_snapshot()
+
+    # Remove raw values from sparklines for JSON response (keep just stats + spark string)
+    if "sparklines" in snapshot:
+        for key in snapshot["sparklines"]:
+            if isinstance(snapshot["sparklines"][key], dict):
+                snapshot["sparklines"][key].pop("values", None)
+
+    snapshot["_links"] = {
+        "self": "/",
+        "health": "/health",
+        "metrics": "/metrics",
+        "history": "/history{?seconds}",
+        "predict": {"href": "/predict", "method": "POST"},
     }
 
-
-@app.get("/services/table", response_class=PlainTextResponse)
-async def services_table():
-    """Services as markdown table for LLM context."""
-    processes = build_process_map()
-    return format_process_map_for_llm(processes)
+    return snapshot
 
 
-@app.get("/gpu/history")
-async def gpu_history(seconds: int = 60):
-    """Get GPU metrics history."""
+@app.get("/metrics", response_class=PlainTextResponse)
+async def metrics():
+    """
+    LLM-optimized text format with sparklines.
+
+    Compact, self-describing, includes 60s history visualization.
+    """
+    snapshot = build_snapshot()
+    return format_metrics_text(snapshot)
+
+
+@app.get("/history")
+async def history(seconds: int = 60):
+    """
+    Raw GPU sample history.
+
+    Args:
+        seconds: Time window (default: 60)
+    """
     gpu_buffer = get_gpu_buffer()
     samples = gpu_buffer.window(seconds)
 
@@ -201,100 +495,115 @@ async def gpu_history(seconds: int = 60):
             }
             for s in samples
         ],
-    }
-
-
-@app.get("/gpu/stats")
-async def gpu_stats(seconds: int = 60):
-    """Get GPU stats over time window."""
-    gpu_buffer = get_gpu_buffer()
-    stats = gpu_buffer.stats(seconds)
-
-    if not stats:
-        return {"error": "No samples in window"}
-
-    return {
-        "window_seconds": seconds,
-        "sample_count": stats.sample_count,
-        "vram": {
-            "avg_gb": round(stats.vram_avg_gb, 2),
-            "min_gb": round(stats.vram_min_gb, 2),
-            "max_gb": round(stats.vram_max_gb, 2),
-        },
-        "util": {
-            "avg_pct": round(stats.gpu_util_avg, 1),
-            "max_pct": stats.gpu_util_max,
-        },
-        "temp": {
-            "avg_c": round(stats.temp_avg, 1),
-            "max_c": round(stats.temp_max, 1),
-        },
-        "power": {
-            "avg_w": round(stats.power_avg, 1),
-            "max_w": round(stats.power_max, 1),
+        "_links": {
+            "self": f"/history?seconds={seconds}",
+            "root": "/",
         },
     }
 
 
-# =============================================================================
-# LLM Report Endpoints
-# =============================================================================
-
-from report_generator import (
-    generate_snapshot_report,
-    generate_window_report,
-    get_report_metrics,
-)
+class PredictRequest(BaseModel):
+    """Request body for /predict endpoint."""
+    prompt: str | None = None
+    max_tokens: int = 500
 
 
-@app.get("/report/snapshot")
-async def report_snapshot():
+LLMCHAT_URL = "http://localhost:2020/v1/chat/completions"
+DEFAULT_MODEL = "qwen3-vl-4b"
+
+SYSTEM_PROMPT = """You are a statistical data analyst for GPU/system telemetry.
+Audience: Engineers and LLMs who will interpret meaning themselves.
+
+Hardware context (for reference, not for recommendations):
+- AMD Radeon 8060S (RDNA 3.5, gfx1151) integrated APU
+- 96GB unified VRAM (shared CPU/GPU)
+- ~240 GB/s peak memory bandwidth
+
+Your job:
+- Summarize current state with key statistics
+- Note anomalies or outliers (values >2σ from recent mean, unexpected patterns)
+- Express confidence levels (high/moderate/low) for observations
+- Report, don't recommend - let readers decide what matters
+
+Output format:
+
+## State
+Key GPU parameters:
+- util: [current]% (60s: mean [x], peak [y], σ [z])
+- temp: [current]°C (60s: mean [x], Δ [change])
+- power: [current]W (60s: mean [x], peak [y])
+- vram: [used]/[total]GB ([percent]%)
+- bandwidth: [current] GB/s (of ~240 peak)
+System: [mem available]GB free, [pressure] pressure, load [x]
+Services: [count] loaded, [total]GB VRAM
+
+## Observations
+- [metric]: [observation with statistical context]
+- ...
+
+## Anomalies
+[Anything unusual with confidence level, or "None detected (high confidence)"]
+
+## Confidence
+[Data quality/certainty statement]
+
+Be precise and clinical. Use confidence language ("likely", "appears to", "uncertain").
+Do not make recommendations. Report what you observe."""
+
+
+@app.post("/predict")
+async def predict(request: PredictRequest):
     """
-    Generate LLM-powered snapshot report.
+    LLM-powered analysis of current GPU/system state.
 
-    Calls llmchat service for inference (~10-30s).
-    Returns both the generated report and raw context.
+    If no prompt is provided, generates a general status report.
     """
+    snapshot = build_snapshot()
+
+    # Use the text metrics format as context
+    metrics_text = format_metrics_text(snapshot)
+
+    if request.prompt:
+        user_message = f"{metrics_text}\n\nUser question: {request.prompt}"
+    else:
+        user_message = f"{metrics_text}\n\nProvide a brief status summary with any concerns or recommendations."
+
+    start = time.time()
     try:
-        return await generate_snapshot_report()
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                LLMCHAT_URL,
+                json={
+                    "model": DEFAULT_MODEL,
+                    "messages": [
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message},
+                    ],
+                    "max_tokens": request.max_tokens,
+                    "temperature": 0.3,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            analysis = data["choices"][0]["message"]["content"]
+            latency_ms = (time.time() - start) * 1000
+
+            return {
+                "analysis": analysis,
+                "model": DEFAULT_MODEL,
+                "latency_ms": round(latency_ms, 1),
+                "_links": {
+                    "self": "/predict",
+                    "root": "/",
+                },
+            }
+
+    except httpx.TimeoutException:
+        return {"error": "llmchat timed out", "status": "error"}
+    except httpx.HTTPStatusError as e:
+        return {"error": f"llmchat error: {e.response.status_code}", "status": "error"}
     except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/report/snapshot/text", response_class=PlainTextResponse)
-async def report_snapshot_text():
-    """
-    Generate snapshot report, return just the text.
-
-    Good for piping to terminal or embedding in prompts.
-    """
-    try:
-        result = await generate_snapshot_report()
-        return result.get("report", result.get("error", "Unknown error"))
-    except Exception as e:
-        return f"Error: {e}"
-
-
-@app.get("/report/window")
-async def report_window(minutes: int = 5):
-    """
-    Generate LLM-powered window summary report.
-
-    Args:
-        minutes: Time window to summarize (default: 5)
-
-    Returns both the generated report and raw context.
-    """
-    try:
-        return await generate_window_report(seconds=minutes * 60)
-    except Exception as e:
-        return {"error": str(e)}
-
-
-@app.get("/report/metrics")
-async def report_metrics():
-    """Get report generation metrics (latency, error rate)."""
-    return get_report_metrics()
+        return {"error": str(e), "status": "error"}
 
 
 if __name__ == "__main__":

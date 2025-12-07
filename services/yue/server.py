@@ -11,6 +11,7 @@ import base64
 import logging
 import os
 import re
+import sys
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
@@ -54,8 +55,8 @@ logger = logging.getLogger(SERVICE_NAME)
 
 job_guard = None
 otel = None
-yue_engine = None  # Direct engine (when fully implemented)
-USE_SUBPROCESS = True  # Toggle: True = subprocess (current), False = direct engine
+yue_engine = None  # Direct engine
+USE_SUBPROCESS = False  # Toggle: True = subprocess, False = direct engine (faster!)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lifespan
@@ -120,6 +121,74 @@ async def lifespan(app: FastAPI):
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper Functions
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+async def generate_song_direct(
+    lyrics: str,
+    genre: str,
+    max_new_tokens: int,
+    run_n_segments: int,
+    seed: int,
+    repetition_penalty: float = 1.1,
+) -> dict:
+    """
+    Run YuE generation using direct engine.
+    Returns dict with audio_base64 or error.
+    """
+    import base64
+    import io
+    import sys
+
+    import numpy as np
+    import soundfile as sf
+
+    job_id = str(uuid.uuid4())[:8]
+    logger.info(f"Starting direct generation job {job_id} for genre '{genre}'")
+
+    try:
+        # Generate audio
+        audio = await asyncio.to_thread(
+            yue_engine.generate,
+            lyrics=lyrics,
+            genre=genre,
+            max_new_tokens=max_new_tokens,
+            run_n_segments=run_n_segments,
+            seed=seed,
+            repetition_penalty=repetition_penalty,
+        )
+
+        # Convert numpy audio to WAV bytes
+        # audio shape is (channels, samples) or (samples,) - flatten if needed
+        if len(audio.shape) > 1:
+            audio_flat = audio.squeeze()  # Remove single-dimensional entries
+        else:
+            audio_flat = audio
+
+        audio_io = io.BytesIO()
+        # YuE outputs at 16kHz, mono
+        sf.write(audio_io, audio_flat, 16000, format="WAV", subtype="PCM_16")
+        audio_io.seek(0)
+        audio_bytes = audio_io.read()
+
+        # Encode to base64
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        logger.info(f"Generated {audio_flat.shape[0] / 16000:.1f}s of audio")
+
+        return {
+            "status": "success",
+            "audio_base64": audio_b64,
+            "format": "wav",
+            "lyrics": lyrics,
+            "genre": genre,
+        }
+
+    except Exception as e:
+        logger.exception("Direct generation failed")
+        return {
+            "status": "error",
+            "error": str(e),
+        }
 
 
 async def generate_song_subprocess(
@@ -348,14 +417,23 @@ async def generate_song(request: YuERequest):
             ) as trace_ctx:
                 logger.info(f"Generating song: genre={request.genre}, lyrics_len={len(request.lyrics)}")
 
-                # Run subprocess generation (async, non-blocking)
-                result = await generate_song_subprocess(
-                    lyrics=request.lyrics,
-                    genre=request.genre,
-                    max_new_tokens=request.max_new_tokens,
-                    run_n_segments=request.run_n_segments,
-                    seed=request.seed,
-                )
+                # Run generation (direct or subprocess)
+                if USE_SUBPROCESS:
+                    result = await generate_song_subprocess(
+                        lyrics=request.lyrics,
+                        genre=request.genre,
+                        max_new_tokens=request.max_new_tokens,
+                        run_n_segments=request.run_n_segments,
+                        seed=request.seed,
+                    )
+                else:
+                    result = await generate_song_direct(
+                        lyrics=request.lyrics,
+                        genre=request.genre,
+                        max_new_tokens=request.max_new_tokens,
+                        run_n_segments=request.run_n_segments,
+                        seed=request.seed,
+                    )
 
                 # Build metadata
                 metadata = ResponseMetadata(

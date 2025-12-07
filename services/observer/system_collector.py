@@ -20,6 +20,8 @@ class SystemSample:
     mem_total_gb: float
     mem_available_gb: float
     mem_used_gb: float
+    mem_cached_gb: float       # Page cache (reclaimable)
+    mem_buffers_gb: float      # Buffer cache (reclaimable)
     swap_total_gb: float
     swap_used_gb: float
     load_1m: float
@@ -37,8 +39,13 @@ class SystemSample:
         return (self.swap_used_gb / self.swap_total_gb) * 100 if self.swap_total_gb > 0 else 0
 
     @property
+    def mem_reclaimable_gb(self) -> float:
+        """Page cache + buffers that can be reclaimed if needed."""
+        return self.mem_cached_gb + self.mem_buffers_gb
+
+    @property
     def mem_pressure(self) -> str:
-        """Classify memory pressure level."""
+        """Classify memory pressure level based on MemAvailable."""
         avail_pct = (self.mem_available_gb / self.mem_total_gb) * 100
         if avail_pct > 30:
             return "low"
@@ -46,6 +53,25 @@ class SystemSample:
             return "medium"
         else:
             return "high"
+
+    @property
+    def swap_concern(self) -> str:
+        """
+        Classify swap concern level.
+
+        Swap usage alone isn't concerning - Linux optimistically swaps
+        rarely-used pages. What matters is if we're under actual pressure.
+        """
+        if self.swap_used_gb < 0.1:
+            return "none"
+        # Swap in use, but plenty of RAM available = optimistic swap, fine
+        if self.mem_pressure == "low":
+            return "optimistic"  # Normal Linux behavior
+        # Swap in use AND low available RAM = potential thrashing
+        elif self.mem_pressure == "medium":
+            return "moderate"
+        else:
+            return "pressure"  # Likely thrashing
 
 
 def parse_meminfo() -> dict[str, int]:
@@ -116,6 +142,8 @@ def read_system_sample() -> SystemSample:
         mem_total_gb=mem_total,
         mem_available_gb=mem_available,
         mem_used_gb=mem_used,
+        mem_cached_gb=mem_cached,
+        mem_buffers_gb=mem_buffers,
         swap_total_gb=swap_total,
         swap_used_gb=swap_used,
         load_1m=load_1m,

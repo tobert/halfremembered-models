@@ -41,7 +41,6 @@ class ServiceMeta:
     model: str
     model_type: Literal["midi_generation", "audio_generation", "text_generation", "embedding", "beat_detection", "observability"]
     inference: Literal["autoregressive", "two_stage", "single_forward", "hybrid"]
-    bottleneck: Literal["memory_bandwidth", "compute", "stage2_acoustic", "none"]
     note: str = ""
 
 
@@ -51,85 +50,68 @@ SERVICE_META: dict[str, ServiceMeta] = {
         model="YuanGZA/Orpheus-GPT2-v0.8",
         model_type="midi_generation",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
-        note="GPT-2 style MIDI token generation",
     ),
     "orpheus-classifier": ServiceMeta(
         model="YuanGZA/Orpheus-Classifier",
         model_type="midi_generation",
         inference="single_forward",
-        bottleneck="none",
         note="Classifies MIDI as human/AI",
     ),
     "orpheus-bridge": ServiceMeta(
         model="YuanGZA/Orpheus-Bridge",
         model_type="midi_generation",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
     ),
     "orpheus-loops": ServiceMeta(
         model="YuanGZA/Orpheus-Loops",
         model_type="midi_generation",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
     ),
     "orpheus-children": ServiceMeta(
         model="YuanGZA/Orpheus-Children",
         model_type="midi_generation",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
     ),
     "orpheus-mono": ServiceMeta(
         model="YuanGZA/Orpheus-Mono",
         model_type="midi_generation",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
     ),
     "yue": ServiceMeta(
         model="m-a-p/YuE-s1-7B + YuE-s2-1B",
         model_type="audio_generation",
         inference="two_stage",
-        bottleneck="stage2_acoustic",
-        note="stage1=semantic tokens (fast), stage2=acoustic tokens (5-10x slower)",
+        note="stage1=semantic tokens, stage2=acoustic tokens",
     ),
     "musicgen": ServiceMeta(
         model="facebook/musicgen-medium",
         model_type="audio_generation",
         inference="autoregressive",
-        bottleneck="compute",
     ),
     "clap": ServiceMeta(
         model="laion/larger_clap_music",
         model_type="embedding",
         inference="single_forward",
-        bottleneck="none",
-        note="Audio/text embeddings, very fast",
     ),
     "beat-this": ServiceMeta(
         model="CPJKU/beat-this",
         model_type="beat_detection",
         inference="single_forward",
-        bottleneck="none",
     ),
     "llmchat": ServiceMeta(
         model="Qwen/Qwen2.5-7B-Instruct",
         model_type="text_generation",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
-        note="~13 tok/s max on this hardware (240 GB/s memory bound)",
     ),
     "anticipatory": ServiceMeta(
         model="stanford-crfm/music-medium-800k",
         model_type="midi_generation",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
     ),
     "observer": ServiceMeta(
         model="Qwen/Qwen3-VL-4B-Instruct",
         model_type="observability",
         inference="autoregressive",
-        bottleneck="memory_bandwidth",
-        note="This service - GPU observability agent",
     ),
 }
 
@@ -179,28 +161,82 @@ class ServiceProcess:
 
 def get_listening_pids() -> dict[int, int]:
     """
-    Map port → PID by parsing ss output.
+    Map port → PID by reading /proc directly.
+
+    Uses /proc/net/tcp to find listening sockets and their inodes,
+    then scans /proc/*/fd to find which PIDs own those sockets.
+
+    This approach works in restricted systemd environments where
+    `ss -tlnp` cannot show process info for other services.
 
     Returns dict of {port: pid} for ports in PORT_TO_SERVICE.
     """
-    try:
-        result = subprocess.run(
-            ["ss", "-tlnp"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError):
+    from pathlib import Path
+    import os
+
+    # Step 1: Read /proc/net/tcp and tcp6 to find listening sockets
+    # Format: sl local_address rem_address st ... inode
+    # State 0A = LISTEN
+    listening_inodes: dict[int, int] = {}  # port -> inode
+
+    for proto in ["tcp", "tcp6"]:
+        tcp_path = Path(f"/proc/net/{proto}")
+        if not tcp_path.exists():
+            continue
+        try:
+            for line in tcp_path.read_text().splitlines()[1:]:  # skip header
+                parts = line.split()
+                if len(parts) < 10:
+                    continue
+                if parts[3] != "0A":  # not LISTEN
+                    continue
+                _, port_hex = parts[1].split(":")
+                port = int(port_hex, 16)
+                if port in PORT_TO_SERVICE:
+                    inode = int(parts[9])
+                    listening_inodes[port] = inode
+        except (OSError, ValueError):
+            continue
+
+    if not listening_inodes:
         return {}
 
+    # Step 2: Scan /proc/*/fd to find which PIDs own those inodes
+    target_inodes = set(listening_inodes.values())
+    inode_to_pid: dict[int, int] = {}
+    proc = Path("/proc")
+
+    for pid_dir in proc.iterdir():
+        if not pid_dir.name.isdigit():
+            continue
+        pid = int(pid_dir.name)
+        fd_dir = pid_dir / "fd"
+        if not fd_dir.exists():
+            continue
+        try:
+            for fd_link in fd_dir.iterdir():
+                try:
+                    target = os.readlink(fd_link)
+                    if target.startswith("socket:["):
+                        inode = int(target[8:-1])
+                        if inode in target_inodes:
+                            inode_to_pid[inode] = pid
+                            # Early exit if we found all
+                            if len(inode_to_pid) == len(target_inodes):
+                                break
+                except (OSError, ValueError):
+                    continue
+        except PermissionError:
+            continue
+        if len(inode_to_pid) == len(target_inodes):
+            break
+
+    # Step 3: Map port -> PID
     port_to_pid = {}
-    for line in result.stdout.splitlines():
-        # LISTEN 0 2048 0.0.0.0:2006 ... users:(("python3",pid=461712,fd=22))
-        match = re.search(r':(\d+)\s.*pid=(\d+)', line)
-        if match:
-            port, pid = int(match.group(1)), int(match.group(2))
-            if port in PORT_TO_SERVICE:
-                port_to_pid[port] = pid
+    for port, inode in listening_inodes.items():
+        pid = inode_to_pid.get(inode)
+        if pid:
+            port_to_pid[port] = pid
 
     return port_to_pid
 
@@ -273,10 +309,10 @@ def format_process_map_for_llm(processes: dict[str, ServiceProcess]) -> str:
     if not processes:
         return "No services running"
 
-    lines = ["| Service | VRAM | Bottleneck |", "|---------|------|------------|"]
+    lines = ["| Service | VRAM | Type |", "|---------|------|------|"]
     for name, proc in sorted(processes.items(), key=lambda x: -x[1].vram_bytes):
-        bottleneck = proc.meta.bottleneck if proc.meta else "unknown"
-        lines.append(f"| {name} | {proc.vram_gb:.1f} GB | {bottleneck} |")
+        model_type = proc.meta.model_type if proc.meta else "unknown"
+        lines.append(f"| {name} | {proc.vram_gb:.1f} GB | {model_type} |")
 
     total = sum(p.vram_gb for p in processes.values())
     lines.append(f"\n**Total service VRAM**: {total:.1f} GB")

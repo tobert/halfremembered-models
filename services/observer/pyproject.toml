@@ -8,6 +8,7 @@ dependencies = [
     "uvicorn[standard]",
     "httpx",
     "hrserve",
+    "construct",
 ]
 
 [project.optional-dependencies]

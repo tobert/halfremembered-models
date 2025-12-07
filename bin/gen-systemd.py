@@ -42,6 +42,10 @@ SERVICE_ENV: dict[str, list[str]] = {
     "llmchat": ["LLMCHAT_MODEL=qwen3-vl-4b"],
 }
 
+# Services that need relaxed security (can see other processes)
+# Observer needs to read /proc/<pid>/fd to map sockets to PIDs
+RELAXED_SECURITY_SERVICES: set[str] = {"observer"}
+
 UNIT_TEMPLATE = """\
 [Unit]
 Description={description}
@@ -61,12 +65,20 @@ Environment=OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier={service}
-
-NoNewPrivileges=true
-PrivateTmp=true
-
+{security_settings}
 [Install]
 WantedBy=default.target
+"""
+
+# Default security settings for most services
+SECURITY_STRICT = """\
+NoNewPrivileges=true
+PrivateTmp=true
+"""
+
+# Relaxed security for monitoring services that need /proc access
+SECURITY_RELAXED = """\
+# Relaxed security: needs /proc/<pid>/fd access for process monitoring
 """
 
 
@@ -108,6 +120,12 @@ def generate_unit(service: str, repo_path: Path, uv_path: Path) -> str:
     extra_env_lines = SERVICE_ENV.get(service, [])
     extra_env = "\n".join(f"Environment={env}" for env in extra_env_lines)
 
+    # Select security settings
+    if service in RELAXED_SECURITY_SERVICES:
+        security_settings = SECURITY_RELAXED
+    else:
+        security_settings = SECURITY_STRICT
+
     return UNIT_TEMPLATE.format(
         service=service,
         description=description,
@@ -115,6 +133,7 @@ def generate_unit(service: str, repo_path: Path, uv_path: Path) -> str:
         uv_path=uv_path,
         port=port,
         extra_env=extra_env,
+        security_settings=security_settings,
     )
 
 

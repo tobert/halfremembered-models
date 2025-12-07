@@ -151,20 +151,29 @@ def read_gpu_sample(device: AmdGpuDevice) -> GpuSample:
     """
     Read all GPU metrics in one shot.
 
-    This is fast (~0.1ms) - just file reads, no subprocess.
+    Uses gpu_metrics binary for accurate utilization (gfx_activity_pct).
+    Falls back to sysfs gpu_busy_percent if gpu_metrics unavailable.
     """
+    from gpu_metrics import read_gpu_metrics
+
     vram_used = _read_int(device.vram_used)
     vram_total = _read_int(device.vram_total)
-    gpu_busy = _read_int(device.gpu_busy)
     temp_milli = _read_int_safe(device.temp)
     power_micro = _read_int_safe(device.power)
     freq_hz = _read_int_safe(device.freq)
+
+    # Prefer gpu_metrics for accurate utilization
+    rich = read_gpu_metrics()
+    if rich and rich.gfx_activity_pct is not None:
+        gpu_util = rich.gfx_activity_pct
+    else:
+        gpu_util = _read_int(device.gpu_busy)
 
     return GpuSample(
         timestamp=time.time(),
         vram_used_gb=vram_used / 1e9,
         vram_total_gb=vram_total / 1e9,
-        gpu_util_pct=gpu_busy,
+        gpu_util_pct=gpu_util,
         temp_c=temp_milli / 1000.0,
         power_w=power_micro / 1e6,
         freq_ghz=freq_hz / 1e9,

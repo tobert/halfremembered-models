@@ -148,7 +148,7 @@ def analyze_gpu_state(
 
     # Generate notes
     if status == "saturated" and bottleneck == "memory_bandwidth":
-        notes.append("GPU at 100% but memory-bandwidth limited (~240 GB/s)")
+        notes.append("GPU saturated, memory-bandwidth limited (~240 GB/s peak)")
 
     if oom_risk in ("medium", "high"):
         notes.append(f"VRAM headroom low: {vram_headroom:.1f} GB free")
@@ -186,21 +186,23 @@ def analyze_system_state(current: SystemSample) -> SystemStateAnalysis:
     """Analyze system state for issues that might affect GPU workloads."""
     notes = []
 
-    # Memory pressure
-    avail_pct = (current.mem_available_gb / current.mem_total_gb) * 100
-    if avail_pct > 30:
-        mem_pressure = "low"
-    elif avail_pct > 10:
-        mem_pressure = "medium"
+    # Memory pressure (use the computed property)
+    mem_pressure = current.mem_pressure
+    if mem_pressure == "medium":
         notes.append(f"Memory getting tight: {current.mem_available_gb:.1f} GB available")
-    else:
-        mem_pressure = "high"
+    elif mem_pressure == "high":
         notes.append(f"Memory pressure high: only {current.mem_available_gb:.1f} GB available")
 
-    # Swap usage
-    swap_active = current.swap_used_gb > 1.0
-    if swap_active:
-        notes.append(f"Swap in use: {current.swap_used_gb:.1f} GB - may cause latency spikes")
+    # Swap usage - only warn if there's actual pressure
+    # Linux uses swap optimistically; it's not a problem if RAM is available
+    swap_concern = current.swap_concern
+    swap_active = swap_concern in ("moderate", "pressure")
+
+    if swap_concern == "moderate":
+        notes.append(f"Swap active ({current.swap_used_gb:.1f} GB) with moderate memory pressure")
+    elif swap_concern == "pressure":
+        notes.append(f"Swap thrashing likely: {current.swap_used_gb:.1f} GB swap, low available RAM")
+    # Note: "optimistic" swap is intentionally not reported - it's normal Linux behavior
 
     # CPU pressure (load vs cores, assuming ~16 cores)
     cores = 16  # Could detect from /proc/cpuinfo
