@@ -19,7 +19,7 @@ def test_service_meta_defined():
     from process_map import PORT_TO_SERVICE, SERVICE_META
 
     for port, service in PORT_TO_SERVICE.items():
-        if service not in ("stable-audio", "audioldm2"):  # These may not be defined yet
+        if service not in ("audioldm2",):  # audioldm2 may not have full meta yet
             assert service in SERVICE_META, f"Missing SERVICE_META for {service}"
 
 

@@ -66,8 +66,7 @@ just test clap
 | 2006 | musicgen | facebook/musicgen-medium | Text-to-music (1.5B) |
 | 2007 | clap | laion/larger_clap_music | Audio-text embeddings (512d) |
 | 2008 | yue | m-a-p/YuE-s1-7B + s2-1B | Lyrics to song with vocals |
-| 2009 | stable-audio | stability/stable-audio | Audio generation (WIP) |
-| 2010 | audioldm2 | cvssp/audioldm2 | Audio generation (WIP) |
+| 2010 | audioldm2 | cvssp/audioldm2 | Text-to-audio diffusion |
 | 2011 | anticipatory | stanford-crfm/music-medium | Anticipatory music (800M) |
 | 2012 | beat-this | CPJKU/beat-this | Beat/downbeat detection |
 | 2020 | llmchat | Qwen3-VL-4B | OpenAI-compatible LLM API |

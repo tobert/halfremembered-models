@@ -223,7 +223,6 @@ PORT_TO_SERVICE = {
     2006: "musicgen",
     2007: "clap",
     2008: "yue",
-    2009: "stable-audio",
     2010: "audioldm2",
     2011: "anticipatory",
     2012: "beat-this",

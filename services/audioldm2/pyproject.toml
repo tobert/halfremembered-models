@@ -1,14 +1,21 @@
 [project]
 name = "audioldm2-service"
-version = "1.0.0"
-description = "audioldm2 service for halfremembered (skeleton)"
+version = "2.0.0"
+description = "AudioLDM2 text-to-audio service for halfremembered"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     "torch",
     "torchaudio",
     "torchvision",
     "pytorch-triton-rocm",
-    
+    "transformers",
+    "diffusers>=0.30.0",
+    "accelerate",
+    "safetensors",
+    "httpx",
+    "numpy",
+    "soundfile",
+    "librosa",
     "hrserve",
 ]
 
@@ -32,3 +39,7 @@ pytorch-triton-rocm = { index = "pytorch-rocm" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow",
+    "benchmark: marks tests as benchmarks",
+]

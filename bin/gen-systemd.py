@@ -29,7 +29,6 @@ SERVICES: dict[str, tuple[int, str]] = {
     "musicgen": (2006, "Meta MusicGen Text-to-Music"),
     "clap": (2007, "CLAP Audio Analysis and Embeddings"),
     "yue": (2008, "YuE Text-to-Song Generation"),
-    "stable-audio": (2009, "Stability AI Audio Generation"),
     "audioldm2": (2010, "AudioLDM2 Audio Generation"),
     "anticipatory": (2011, "Anticipatory Music Generation"),
     "beat-this": (2012, "Beat This! Beat and Downbeat Tracking"),

@@ -16,7 +16,7 @@
 - [x] musicgen - **working** ✅
 - [x] yue - **working** ✅
 - [x] orpheus-base, orpheus-classifier, orpheus-bridge, orpheus-loops, orpheus-children, orpheus-mono - migrated but need model path fix
-- [x] Skeleton services: deepseek, anticipatory, audioldm2, stable-audio
+- [x] Skeleton services: deepseek, anticipatory, audioldm2
 
 ### Phase 3: Configuration
 - [x] All pyproject.toml files configured with ROCm 7.1 nightly torch

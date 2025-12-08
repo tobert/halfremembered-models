@@ -291,7 +291,6 @@ _port service:
         musicgen) echo 2006 ;; \
         clap) echo 2007 ;; \
         yue) echo 2008 ;; \
-        stable-audio) echo 2009 ;; \
         audioldm2) echo 2010 ;; \
         anticipatory) echo 2011 ;; \
         beat-this) echo 2012 ;; \

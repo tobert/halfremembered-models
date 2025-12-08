@@ -59,6 +59,7 @@ curl -X POST http://localhost:2007/predict \
 | **orpheus-children** | Generate children's music style MIDI |
 | **orpheus-mono** | Generate single-voice melodies |
 | **musicgen** | Text-to-audio generation (Meta's model) |
+| **audioldm2** | Text-to-audio diffusion (sound effects, music, ambient) |
 | **clap** | Audio embeddings, zero-shot classification |
 | **yue** | Lyrics → full song with vocals (7B + 1B, slow) |
 | **llmchat** | OpenAI-compatible chat API (tool calling supported) |
@@ -194,8 +195,7 @@ Each service exposes:
 | 2006 | musicgen | ✅ |
 | 2007 | clap | ✅ |
 | 2008 | yue | ✅ |
-| 2009 | stable-audio | WIP |
-| 2010 | audioldm2 | WIP |
+| 2010 | audioldm2 | ✅ |
 | 2011 | anticipatory | ✅ |
 | 2012 | beat-this | ✅ |
 | 2020 | llmchat | ✅ |

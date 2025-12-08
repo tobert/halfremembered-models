@@ -1,0 +1,24 @@
+[Unit]
+Description=AudioLDM2 Audio Generation
+After=network.target
+
+[Service]
+Type=exec
+WorkingDirectory=/home/atobey/src/halfremembered-music-models/services/audioldm2
+ExecStart=/home/atobey/.local/bin/uv run python server.py
+Restart=on-failure
+RestartSec=10
+
+Environment=PYTHONUNBUFFERED=1
+Environment=TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1
+Environment=OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4317
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=audioldm2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
+
