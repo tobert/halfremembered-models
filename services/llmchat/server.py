@@ -3,18 +3,23 @@ llmchat - OpenAI-compatible LLM inference server.
 
 Port: 2020
 Endpoints:
-  - GET  /health              Health check (returns "ok")
+  - GET  /health              Health check
   - GET  /v1/models           List available models
   - POST /v1/chat/completions Chat completion (streaming + non-streaming)
 """
 import logging
-import os
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
+from typing import AsyncGenerator, Optional
 
+import torch
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import StreamingResponse
 
+from hrserve import (
+    OTELContext,
+    check_available_vram,
+    setup_otel,
+)
 from llm import LLMChat
 from openai_types import (
     ChatCompletionChunk,
@@ -33,17 +38,24 @@ logger = logging.getLogger(__name__)
 
 PORT = 2020
 SERVICE_NAME = "llmchat"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# Global LLM instance
-llm: LLMChat = None
+# Global state
+llm: Optional[LLMChat] = None
+otel: Optional[OTELContext] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - load model on startup."""
-    global llm
+    global llm, otel
+
+    # Setup OTEL
+    tracer, meter = setup_otel(f"{SERVICE_NAME}-api", "2.0.0")
+    otel = OTELContext(tracer, SERVICE_NAME)
 
     logger.info(f"Starting {SERVICE_NAME} service...")
+    check_available_vram(16.0, DEVICE)  # 7B model in fp16 ~14GB + activations
 
     # Initialize and load model
     llm = LLMChat()
@@ -52,14 +64,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"{SERVICE_NAME} ready on port {PORT}")
     yield
 
-    # Cleanup (if needed)
     logger.info(f"{SERVICE_NAME} shutting down")
 
 
 app = FastAPI(
     title="llmchat",
     description="OpenAI-compatible LLM inference with tool calling",
-    version="1.0.0",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -68,10 +79,16 @@ app = FastAPI(
 # Health Check
 # ─────────────────────────────────────────────────────────────────────────────
 
-@app.get("/health", response_class=PlainTextResponse)
-async def health():
-    """Health check endpoint for impresario compatibility."""
-    return "ok"
+
+@app.get("/health")
+def health():
+    """Health check endpoint."""
+    return {
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "version": "2.0.0",
+        "model": llm.model_id if llm else None,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -116,7 +133,7 @@ async def stream_sse(request: ChatCompletionRequest) -> AsyncGenerator[str, None
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest):
+def chat_completions(request: ChatCompletionRequest):
     """
     Create a chat completion (OpenAI-compatible).
 
@@ -129,18 +146,26 @@ async def chat_completions(request: ChatCompletionRequest):
         raise HTTPException(status_code=503, detail="Model not loaded")
 
     try:
-        if request.stream:
-            return StreamingResponse(
-                stream_sse(request),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
-            )
-        else:
-            response = llm.chat(request)
-            return response
+        # Trace with OTEL (keep OpenAI response format pure)
+        with otel.trace_predict(
+            f"{SERVICE_NAME}.chat",
+            model=request.model or llm.model_id,
+            streaming=request.stream,
+            num_messages=len(request.messages),
+            num_tools=len(request.tools) if request.tools else 0,
+        ):
+            if request.stream:
+                return StreamingResponse(
+                    stream_sse(request),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                    },
+                )
+            else:
+                response = llm.chat(request)
+                return response
 
     except Exception as e:
         logger.error(f"Chat completion error: {e}", exc_info=True)
