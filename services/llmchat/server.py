@@ -87,7 +87,7 @@ def health():
         "status": "ok",
         "service": SERVICE_NAME,
         "version": "2.0.0",
-        "model": llm.model_id if llm else None,
+        "model": llm.model_key if llm else None,
     }
 
 
