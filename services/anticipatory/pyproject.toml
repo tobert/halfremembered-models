@@ -1,8 +1,8 @@
 [project]
 name = "anticipatory-service"
-version = "1.0.0"
+version = "2.0.0"
 description = "Anticipatory Music Transformer - Stanford CRFM music generation"
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "torch",
     "torchaudio",
@@ -11,7 +11,8 @@ dependencies = [
     "transformers",
     "anticipation",
     "mido",
-    "litserve",
+    "fastapi",
+    "uvicorn",
     "httpx",
     "numpy",
     "hrserve",
