@@ -577,7 +577,7 @@ async def predict(
 
     start = time.time()
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=3600.0) as client:  # 1 hour for slow models
             response = await client.post(
                 LLMCHAT_URL,
                 json={
