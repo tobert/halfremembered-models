@@ -24,7 +24,7 @@ from transformers import (
     TextIteratorStreamer,
 )
 
-from hrserve.config import QWEN_VL_4B_PATH, QWEN_VL_8B_PATH
+from hrserve.config import QWEN_VL_4B_PATH, QWEN_VL_8B_PATH, QWEN3_30B_A3B_PATH
 
 from openai_types import (
     ChatCompletionChunk,
@@ -44,6 +44,7 @@ from openai_types import (
     ToolCall,
     Usage,
 )
+from tool_parser import parse_response_for_tools
 
 logger = logging.getLogger(__name__)
 
@@ -54,12 +55,14 @@ MODEL_CONFIGS = {
     "qwen2.5-14b": "Qwen/Qwen2.5-14B-Instruct",
     "qwen2.5-32b": "Qwen/Qwen2.5-32B-Instruct",
     "qwen2.5-3b": "Qwen/Qwen2.5-3B-Instruct",
+    # Qwen3 MoE - 30B total, 3.3B active params, excellent tool calling
+    "qwen3-30b-a3b": str(QWEN3_30B_A3B_PATH),
     # Vision-Language models
     "qwen3-vl-4b": str(QWEN_VL_4B_PATH),
     "qwen3-vl-8b": str(QWEN_VL_8B_PATH),
 }
 
-DEFAULT_MODEL = "qwen2.5-7b"
+DEFAULT_MODEL = "qwen3-30b-a3b"
 
 
 def is_vl_model(model_id: str) -> bool:
@@ -639,48 +642,13 @@ class LLMChat:
         """
         Parse model response for tool calls.
 
-        Qwen2.5 uses a specific format for tool calls:
+        Uses a state-machine parser (tool_parser.py) instead of regex for
+        robustness against malformed input and nested JSON.
+
+        Hermes-style format:
         <tool_call>{"name": "func", "arguments": {...}}</tool_call>
 
         Returns:
             (tool_calls, content, finish_reason)
         """
-        # Check for Qwen-style tool calls
-        tool_call_pattern = r'<tool_call>\s*(\{.*?\})\s*</tool_call>'
-        matches = re.findall(tool_call_pattern, response_text, re.DOTALL)
-
-        if matches and tools:
-            tool_calls = []
-            for i, match in enumerate(matches):
-                try:
-                    parsed = json.loads(match)
-                    name = parsed.get("name", "")
-                    arguments = parsed.get("arguments", {})
-
-                    # Convert arguments back to JSON string (OpenAI format)
-                    if isinstance(arguments, dict):
-                        arguments_str = json.dumps(arguments)
-                    else:
-                        arguments_str = str(arguments)
-
-                    tool_calls.append(
-                        ToolCall(
-                            id=f"call_{uuid.uuid4().hex[:8]}",
-                            type="function",
-                            function=FunctionCall(
-                                name=name,
-                                arguments=arguments_str,
-                            ),
-                        )
-                    )
-                except json.JSONDecodeError:
-                    logger.warning(f"Failed to parse tool call: {match}")
-                    continue
-
-            if tool_calls:
-                # Remove tool call markers from content
-                content = re.sub(tool_call_pattern, '', response_text).strip()
-                return tool_calls, content if content else None, "tool_calls"
-
-        # No tool calls - return as regular content
-        return None, response_text.strip(), "stop"
+        return parse_response_for_tools(response_text, has_tools=bool(tools))
