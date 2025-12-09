@@ -44,7 +44,7 @@ from openai_types import (
     ToolCall,
     Usage,
 )
-from tool_parser import parse_response_for_tools
+from tool_parser import parse_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -651,4 +651,5 @@ class LLMChat:
         Returns:
             (tool_calls, content, finish_reason)
         """
-        return parse_response_for_tools(response_text, has_tools=bool(tools))
+        result = parse_tool_calls(response_text, has_tools=bool(tools))
+        return result.tool_calls, result.content, result.finish_reason

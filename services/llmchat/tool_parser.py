@@ -17,6 +17,8 @@ import uuid
 from dataclasses import dataclass
 from typing import Optional
 
+from openai_types import ToolCall, FunctionCall
+
 logger = logging.getLogger(__name__)
 
 # The literal tags we're looking for
@@ -24,20 +26,18 @@ TOOL_CALL_OPEN = "<tool_call>"
 TOOL_CALL_CLOSE = "</tool_call>"
 
 
-@dataclass
-class ParsedToolCall:
-    """A successfully parsed tool call."""
-    name: str
-    arguments: dict
-    raw_json: str  # Original JSON string for debugging
+def _generate_tool_call_id() -> str:
+    """Generate a unique tool call ID in OpenAI format."""
+    return f"call_{uuid.uuid4().hex[:12]}"
 
 
 @dataclass
 class ToolCallParseResult:
     """Result of parsing a response for tool calls."""
-    tool_calls: list[ParsedToolCall]
-    content: str  # Text outside of tool_call tags
-    had_malformed: bool  # True if we skipped any malformed tool calls
+    tool_calls: list[ToolCall] | None  # OpenAI-format tool calls, None if empty
+    content: str | None  # Text outside of tool_call tags, None if empty
+    finish_reason: str  # "tool_calls" or "stop"
+    had_malformed: bool = False  # True if we skipped any malformed tool calls
 
 
 def find_tag(text: str, tag: str, start: int = 0) -> int:
@@ -106,21 +106,20 @@ def extract_json_object(text: str, start: int) -> tuple[Optional[str], int]:
     return None, start
 
 
-def parse_tool_calls(response_text: str) -> ToolCallParseResult:
+@dataclass
+class _ParsedToolCall:
+    """Internal: a successfully parsed tool call before OpenAI conversion."""
+    name: str
+    arguments: dict
+
+
+def _parse_tool_call_tags(response_text: str) -> tuple[list[_ParsedToolCall], str, bool]:
     """
-    Parse Hermes-style tool calls from LLM response text.
+    Parse Hermes-style tool call tags from text.
 
-    Format expected:
-        Some text <tool_call>{"name": "func", "arguments": {"arg": "val"}}</tool_call> more text
-
-    Multiple tool calls are supported:
-        <tool_call>{"name": "f1", "arguments": {}}</tool_call>
-        <tool_call>{"name": "f2", "arguments": {}}</tool_call>
-
-    Returns:
-        ToolCallParseResult with parsed tool calls and remaining content
+    Returns (tool_calls, content, had_malformed).
     """
-    tool_calls: list[ParsedToolCall] = []
+    tool_calls: list[_ParsedToolCall] = []
     content_parts: list[str] = []
     had_malformed = False
 
@@ -208,11 +207,7 @@ def parse_tool_calls(response_text: str) -> ToolCallParseResult:
                 continue
 
         # Success! Add the tool call
-        tool_calls.append(ParsedToolCall(
-            name=name,
-            arguments=arguments,
-            raw_json=json_str,
-        ))
+        tool_calls.append(_ParsedToolCall(name=name, arguments=arguments))
 
         # Move past the closing tag
         pos = close_search_start + len(TOOL_CALL_CLOSE)
@@ -220,59 +215,66 @@ def parse_tool_calls(response_text: str) -> ToolCallParseResult:
     # Combine content parts, normalize whitespace
     content = ''.join(content_parts).strip()
 
-    return ToolCallParseResult(
-        tool_calls=tool_calls,
-        content=content,
-        had_malformed=had_malformed,
-    )
+    return tool_calls, content, had_malformed
 
 
-def generate_tool_call_id() -> str:
-    """Generate a unique tool call ID in OpenAI format."""
-    return f"call_{uuid.uuid4().hex[:12]}"
-
-
-# Convenience function matching the old interface
-def parse_response_for_tools(response_text: str, has_tools: bool) -> tuple[list | None, str | None, str]:
+def parse_tool_calls(response_text: str, has_tools: bool = True) -> ToolCallParseResult:
     """
-    Parse response for tool calls, returning OpenAI-compatible format.
+    Parse Hermes-style tool calls from LLM response text.
 
-    This is a bridge function to maintain compatibility with the existing
-    _parse_response interface in llm.py.
+    Format expected:
+        Some text <tool_call>{"name": "func", "arguments": {"arg": "val"}}</tool_call> more text
+
+    Multiple tool calls are supported:
+        <tool_call>{"name": "f1", "arguments": {}}</tool_call>
+        <tool_call>{"name": "f2", "arguments": {}}</tool_call>
 
     Args:
         response_text: Raw model output
-        has_tools: Whether tools were provided in the request
+        has_tools: Whether tools were provided in the request. If False,
+                   tool call tags are ignored and everything is content.
 
     Returns:
-        (tool_calls, content, finish_reason)
-        - tool_calls: List of ToolCall objects or None
-        - content: Text content or None
-        - finish_reason: "tool_calls" or "stop"
+        ToolCallParseResult with OpenAI-format tool calls and content
     """
     if not has_tools:
         # No tools provided, everything is content
-        return None, response_text.strip() or None, "stop"
+        content = response_text.strip() or None
+        return ToolCallParseResult(
+            tool_calls=None,
+            content=content,
+            finish_reason="stop",
+        )
 
-    result = parse_tool_calls(response_text)
+    parsed_calls, content, had_malformed = _parse_tool_call_tags(response_text)
 
-    if result.tool_calls:
-        # Import here to avoid circular dependency
-        from openai_types import ToolCall, FunctionCall
-
+    if parsed_calls:
+        # Convert to OpenAI format
         tool_calls = [
             ToolCall(
-                id=generate_tool_call_id(),
+                id=_generate_tool_call_id(),
                 type="function",
                 function=FunctionCall(
                     name=tc.name,
                     arguments=json.dumps(tc.arguments),
                 ),
             )
-            for tc in result.tool_calls
+            for tc in parsed_calls
         ]
 
-        return tool_calls, result.content or None, "tool_calls"
+        return ToolCallParseResult(
+            tool_calls=tool_calls,
+            content=content or None,
+            finish_reason="tool_calls",
+            had_malformed=had_malformed,
+        )
 
     # No tool calls found
-    return None, response_text.strip() or None, "stop"
+    return ToolCallParseResult(
+        tool_calls=None,
+        content=response_text.strip() or None,
+        finish_reason="stop",
+        had_malformed=had_malformed,
+    )
+
+
