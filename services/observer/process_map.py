@@ -5,16 +5,44 @@ Maps the mess of "python3" processes to named services by:
 1. Port → Service (static config)
 2. Port → PID (from ss)
 3. PID → VRAM (from rocm-smi)
+
+Dynamic VRAM estimation:
+- Scans model directories for .safetensors/.bin/.pth files
+- File size ≈ VRAM when loaded (for most models)
+- Adds ~10% overhead for KV cache/activations
+- Orpheus .pth files are fp32, loaded as fp16 (÷2)
 """
 
 from __future__ import annotations
 
-import re
 import subprocess
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Literal
 
 import httpx
+
+# Import centralized config
+try:
+    from hrserve.config import MODELS_DIR, LLM_MODELS_DIR
+except ImportError:
+    # Fallback for standalone testing
+    MODELS_DIR = Path("/tank/ml/music-models/models")
+    LLM_MODELS_DIR = Path("/tank/halfremembered/models")
+
+# Orpheus model checkpoint paths (relative to MODELS_DIR)
+# Duplicated from hrserve.orpheus_models to avoid torch dependency
+ORPHEUS_MODEL_PATHS = {
+    "base": "orpheus/base/1.0.0/Orpheus_Music_Transformer_Trained_Model_128497_steps_0.6934_loss_0.7927_acc.pth",
+    "classifier": "orpheus/classifier/1.0.0/Orpheus_Music_Transformer_Classifier_Trained_Model_23670_steps_0.1837_loss_0.9207_acc.pth",
+    "bridge": "orpheus/bridge/1.0.0/Orpheus_Bridge_Music_Transformer_Trained_Model_43450_steps_0.8334_loss_0.7629_acc.pth",
+    "loops": "orpheus/loops/1.0.0/Orpheus_Music_Transformer_Loops_Fine_Tuned_Model_3441_steps_0.7715_loss_0.7992_acc.pth",
+    "children": "orpheus/Orpheus_Music_Transformer_Children_Songs_Fine_Tuned_Model_60_steps_0.5431_loss_0.838_acc.pth",
+    "mono_melodies": "orpheus/Orpheus_Music_Transformer_Mono_Melodies_Fine_Tuned_Model_2844_steps_0.3231_loss_0.9174_acc.pth",
+}
+
+# HuggingFace cache for models loaded via from_pretrained()
+HF_CACHE_DIR = Path.home() / ".cache" / "huggingface" / "hub"
 
 
 # Static port → service mapping
@@ -50,73 +78,63 @@ class ServiceMeta:
     fp16_expected: bool = True  # Should be running in fp16?
 
 
-# Known service characteristics
-# VRAM expectations are "warm" values (after first inference, includes KV cache)
+# Service characteristics (static metadata only - VRAM is computed dynamically)
 #
 # Orpheus models: 480M params, x_transformers architecture (2048 dim, 8 layers, 32 heads)
 # Checkpoints are fp32 (~1.9GB), loaded as fp16 (~1.0GB cold, ~1.5GB warm with KV cache)
 # Uses attn_flash=True which routes to PyTorch SDPA → works with ROCm aotriton
 SERVICE_META: dict[str, ServiceMeta] = {
     "orpheus-base": ServiceMeta(
-        model="asigalov61/Orpheus-Music-Transformer",
+        model="orpheus/base",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=1.5,  # 480M params fp16 + KV cache after inference
         note="x_transformers with SDPA, NOT GPT-2",
     ),
     "orpheus-classifier": ServiceMeta(
-        model="asigalov61/Orpheus-Classifier",
+        model="orpheus/classifier",
         model_type="midi_generation",
         inference="single_forward",
         note="Classifies MIDI as human/AI, smaller arch (1024 dim, 8 layers)",
-        expected_vram_gb=0.7,  # Smaller model, warm after classification
     ),
     "orpheus-bridge": ServiceMeta(
-        model="asigalov61/Orpheus-Bridge",
+        model="orpheus/bridge",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=1.7,  # Needs input context + output, higher KV cache
         note="x_transformers with SDPA, bridge generation",
     ),
     "orpheus-loops": ServiceMeta(
-        model="asigalov61/Orpheus-Loops",
+        model="orpheus/loops",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=1.5,
         note="x_transformers with SDPA",
     ),
     "orpheus-children": ServiceMeta(
-        model="asigalov61/Orpheus-Children",
+        model="orpheus/children",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=1.5,
         note="x_transformers with SDPA",
     ),
     "orpheus-mono": ServiceMeta(
-        model="asigalov61/Orpheus-Mono",
+        model="orpheus/mono_melodies",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=1.5,
         note="x_transformers with SDPA",
     ),
     "yue": ServiceMeta(
-        model="m-a-p/YuE-s1-7B + YuE-s2-1B",
+        model="m-a-p/YuE-s1-7B-anneal-en-cot + YuE-s2-1B-general",
         model_type="audio_generation",
         inference="two_stage",
         note="stage1=7B semantic, stage2=1B acoustic, both loaded",
-        expected_vram_gb=18.0,  # 7B + 1B in fp16, plus KV cache
     ),
     "musicgen": ServiceMeta(
-        model="facebook/musicgen-medium",
+        model="facebook/musicgen-small",
         model_type="audio_generation",
         inference="autoregressive",
-        expected_vram_gb=3.6,  # 1.5B params + EnCodec, warm after generation
     ),
     "clap": ServiceMeta(
-        model="laion/larger_clap_music",
+        model="laion/clap-htsat-unfused",
         model_type="embedding",
         inference="single_forward",
-        expected_vram_gb=1.2,
     ),
     "beat-this": ServiceMeta(
         model="CPJKU/beat-this",
@@ -124,23 +142,26 @@ SERVICE_META: dict[str, ServiceMeta] = {
         inference="single_forward",
         uses_attention=False,  # TCN-based, no self-attention
         sdpa_compatible=False,
-        expected_vram_gb=0.3,
     ),
     "llmchat": ServiceMeta(
-        model="Qwen/Qwen2.5-7B-Instruct",
+        model="(dynamic)",
         model_type="text_generation",
         inference="autoregressive",
-        expected_vram_gb=15.0,  # 7B in fp16 + KV cache
         note="GQA attention, benefits heavily from SDPA",
     ),
     "anticipatory": ServiceMeta(
-        model="stanford-crfm/music-medium-800k",
+        model="stanford-crfm/music-small-800k",
         model_type="midi_generation",
         inference="autoregressive",
-        expected_vram_gb=2.5,  # 800M params
+    ),
+    "audioldm2": ServiceMeta(
+        model="cvssp/audioldm2",
+        model_type="audio_generation",
+        inference="single_forward",
+        note="Diffusion model for audio generation",
     ),
     "observer": ServiceMeta(
-        model="Qwen/Qwen3-VL-4B-Instruct",
+        model="(llmchat default)",
         model_type="observability",
         inference="autoregressive",
         expected_vram_gb=0.0,  # Uses llmchat, doesn't load its own model
@@ -320,32 +341,191 @@ def get_gpu_memory_by_pid() -> dict[int, int]:
     return pid_to_vram
 
 
-def _query_llmchat_model() -> str | None:
-    """Query llmchat's /v1/models to get currently loaded model."""
+def _estimate_vram_from_files(model_path: Path, is_pth: bool = False) -> float | None:
+    """
+    Estimate expected VRAM from model file sizes.
+
+    For safetensors/bin files, file size ≈ VRAM when loaded.
+    For .pth files (Orpheus), they're fp32 on disk but loaded as fp16 (÷2).
+    Adds ~10% overhead for KV cache and activations.
+
+    Returns estimated VRAM in GB, or None if can't determine.
+    """
+    if not model_path.exists():
+        return None
+
+    total_bytes = 0
+
+    # Handle single file vs directory
+    if model_path.is_file():
+        total_bytes = model_path.stat().st_size
+    else:
+        # Sum up model weight files (including in subdirs for diffusers pipelines)
+        for pattern in ["**/*.safetensors", "**/*.bin", "**/*.pth"]:
+            for f in model_path.glob(pattern):
+                # Skip optimizer states and training artifacts
+                name_lower = f.name.lower()
+                if "optimizer" in name_lower or "training" in name_lower:
+                    continue
+                total_bytes += f.stat().st_size
+                # Detect .pth for dtype adjustment
+                if f.suffix == ".pth":
+                    is_pth = True
+
+    if total_bytes == 0:
+        return None
+
+    # .pth files are typically fp32, loaded as fp16 (÷2)
+    if is_pth:
+        total_bytes = total_bytes // 2
+
+    # Add 10% overhead for KV cache, activations
+    total_with_overhead = total_bytes * 1.1
+    return total_with_overhead / 1e9
+
+
+def _find_hf_model_path(model_id: str) -> Path | None:
+    """
+    Find HuggingFace model in cache by repo ID.
+
+    HF cache structure: ~/.cache/huggingface/hub/models--org--name/snapshots/<hash>/
+    """
+    if not HF_CACHE_DIR.exists():
+        return None
+
+    # Convert org/name to models--org--name
+    cache_name = "models--" + model_id.replace("/", "--")
+    cache_path = HF_CACHE_DIR / cache_name / "snapshots"
+
+    if not cache_path.exists():
+        return None
+
+    # Get most recent snapshot
+    snapshots = list(cache_path.iterdir())
+    if not snapshots:
+        return None
+
+    # Return the first (usually only) snapshot
+    return snapshots[0]
+
+
+def _get_orpheus_model_path(model_key: str) -> Path | None:
+    """Get path to Orpheus model checkpoint."""
+    if not ORPHEUS_MODEL_PATHS:
+        return None
+
+    rel_path = ORPHEUS_MODEL_PATHS.get(model_key)
+    if not rel_path:
+        return None
+
+    full_path = MODELS_DIR / rel_path
+    return full_path if full_path.exists() else None
+
+
+# Service → model path resolution
+SERVICE_MODEL_PATHS: dict[str, tuple[str, Path | None]] = {}  # Cached results
+
+def _resolve_service_model(service: str) -> tuple[str | None, float | None]:
+    """
+    Dynamically resolve model path and estimate VRAM for a service.
+
+    Returns (model_name, estimated_vram_gb) tuple.
+    """
+    meta = SERVICE_META.get(service)
+    if not meta:
+        return None, None
+
+    model_id = meta.model
+
+    # Skip services that don't load models
+    if model_id.startswith("("):
+        return None, None
+
+    # Orpheus models (local .pth files)
+    if model_id.startswith("orpheus/"):
+        model_key = model_id.split("/")[1]  # e.g., "base", "classifier"
+        path = _get_orpheus_model_path(model_key)
+        if path:
+            vram = _estimate_vram_from_files(path, is_pth=True)
+            return model_id, vram
+        return model_id, None
+
+    # Multi-model services (YuE: "model1 + model2")
+    if " + " in model_id:
+        total_vram = 0.0
+        for sub_model in model_id.split(" + "):
+            sub_model = sub_model.strip()
+            path = _find_hf_model_path(sub_model)
+            if path:
+                vram = _estimate_vram_from_files(path)
+                if vram:
+                    total_vram += vram
+        return model_id, total_vram if total_vram > 0 else None
+
+    # HuggingFace models
+    if "/" in model_id:
+        path = _find_hf_model_path(model_id)
+        if path:
+            vram = _estimate_vram_from_files(path)
+            return model_id, vram
+
+    # LLM models in LLM_MODELS_DIR
+    if LLM_MODELS_DIR.exists():
+        candidate = LLM_MODELS_DIR / model_id
+        if candidate.exists():
+            vram = _estimate_vram_from_files(candidate)
+            return model_id, vram
+
+    return model_id, None
+
+
+def _query_llmchat_model() -> tuple[str | None, float | None]:
+    """
+    Query llmchat's /v1/models to get currently loaded model.
+
+    Returns (model_name, estimated_vram_gb) tuple.
+    """
     try:
         resp = httpx.get("http://localhost:2020/v1/models", timeout=2.0)
         resp.raise_for_status()
         data = resp.json()
         if data.get("data"):
             model_id = data["data"][0].get("id", "")
-            # Extract model name from path like /.../models/Qwen3-VL-4B-Instruct
-            return model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
+            # model_id is typically the full path like /tank/.../Qwen3-30B-A3B-Instruct-2507
+            model_path = Path(model_id) if "/" in model_id else None
+            model_name = model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
+
+            # Try to estimate VRAM from the actual path first
+            estimated_vram = None
+            if model_path and model_path.exists():
+                estimated_vram = _estimate_vram_from_files(model_path)
+
+            # Fall back to searching known locations
+            if estimated_vram is None:
+                found_path = _find_model_path(model_name)
+                if found_path:
+                    estimated_vram = _estimate_vram_from_files(found_path)
+
+            return model_name, estimated_vram
     except Exception:
         pass
-    return None
+    return None, None
 
 
 def build_process_map() -> dict[str, ServiceProcess]:
     """
     Build complete service → process mapping with VRAM usage.
 
+    Dynamically resolves model paths and estimates expected VRAM
+    by scanning actual model files on disk.
+
     Returns dict of {service_name: ServiceProcess}.
     """
     port_to_pid = get_listening_pids()
     pid_to_vram = get_gpu_memory_by_pid()
 
-    # Dynamic model discovery for llmchat
-    llmchat_model = _query_llmchat_model()
+    # Dynamic model discovery for llmchat (via API)
+    llmchat_model, llmchat_estimated_vram = _query_llmchat_model()
 
     processes = {}
     for port, service in PORT_TO_SERVICE.items():
@@ -354,9 +534,24 @@ def build_process_map() -> dict[str, ServiceProcess]:
             vram_bytes = pid_to_vram.get(pid, 0)
             meta = SERVICE_META.get(service)
 
-            # Override llmchat model with dynamically discovered value
-            if service == "llmchat" and llmchat_model and meta:
-                meta = replace(meta, model=llmchat_model)
+            if meta:
+                updates = {}
+
+                # llmchat: use API to get current model
+                if service == "llmchat":
+                    if llmchat_model:
+                        updates["model"] = llmchat_model
+                    if llmchat_estimated_vram is not None:
+                        updates["expected_vram_gb"] = llmchat_estimated_vram
+
+                # All other services: resolve model path and estimate VRAM
+                elif meta.expected_vram_gb is None:
+                    _, estimated_vram = _resolve_service_model(service)
+                    if estimated_vram is not None:
+                        updates["expected_vram_gb"] = estimated_vram
+
+                if updates:
+                    meta = replace(meta, **updates)
 
             processes[service] = ServiceProcess(
                 name=service,
