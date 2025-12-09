@@ -42,6 +42,7 @@ LLM_MODELS_DIR = get_dir(
 YUE_XCODEC_DIR = MODELS_DIR / "xcodec_mini_infer"
 QWEN_VL_4B_PATH = LLM_MODELS_DIR / "Qwen3-VL-4B-Instruct"
 QWEN_VL_8B_PATH = LLM_MODELS_DIR / "Qwen3-VL-8B-Instruct"
+QWEN3_30B_A3B_PATH = LLM_MODELS_DIR / "Qwen3-30B-A3B-Instruct-2507"
 
 def get_model_path(model_name: str) -> Path:
     """Helper to get a full path for a model name under MODELS_DIR."""

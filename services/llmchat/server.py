@@ -40,6 +40,13 @@ PORT = 2020
 SERVICE_NAME = "llmchat"
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Model Selection - change this to switch models
+# ─────────────────────────────────────────────────────────────────────────────
+# Options: qwen3-30b-a3b, qwen3-vl-4b, qwen3-vl-8b, qwen2.5-7b, etc.
+# See MODEL_CONFIGS in llm.py for full list
+MODEL_KEY = "qwen3-30b-a3b"
+
 # Global state
 llm: Optional[LLMChat] = None
 otel: Optional[OTELContext] = None
@@ -58,7 +65,7 @@ async def lifespan(app: FastAPI):
     check_available_vram(16.0, DEVICE)  # 7B model in fp16 ~14GB + activations
 
     # Initialize and load model
-    llm = LLMChat()
+    llm = LLMChat(model_key=MODEL_KEY)
     llm.load(device="cuda")
 
     logger.info(f"{SERVICE_NAME} ready on port {PORT}")

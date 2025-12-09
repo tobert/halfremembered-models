@@ -37,9 +37,8 @@ SERVICES: dict[str, tuple[int, str]] = {
 }
 
 # Extra environment variables per service (for service-specific config)
-SERVICE_ENV: dict[str, list[str]] = {
-    "llmchat": ["LLMCHAT_MODEL=qwen3-vl-4b"],
-}
+# Note: llmchat model selection is now in server.py MODEL_KEY constant
+SERVICE_ENV: dict[str, list[str]] = {}
 
 # Services that need relaxed security (can see other processes)
 # Observer needs to read /proc/<pid>/fd to map sockets to PIDs
