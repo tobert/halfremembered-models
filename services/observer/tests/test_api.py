@@ -97,7 +97,7 @@ def test_metrics_returns_text(client):
     assert "health:" in text
     assert "## GPU" in text
     assert "## System" in text
-    assert "## Services" in text
+    assert "## Active Models" in text
 
     # Check sparklines are present
     assert "▁" in text or "▂" in text or "▃" in text or "▄" in text or "█" in text or "╌" in text
@@ -146,10 +146,10 @@ def test_predict_requires_post(client):
 
 def test_predict_accepts_empty_body(client):
     """Test /predict works with empty body (uses defaults)."""
-    # Note: This will fail if llmchat isn't running, which is expected
+    # Note: This will fail if llama.cpp isn't running, which is expected
     response = client.post("/predict", json={})
 
-    # Should either succeed or return error about llmchat
+    # Should either succeed or return error about llama.cpp
     assert response.status_code == 200
     data = response.json()
 

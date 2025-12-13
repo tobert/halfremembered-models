@@ -59,7 +59,7 @@ PORT_TO_SERVICE: dict[int, str] = {
     2010: "audioldm2",
     2011: "anticipatory",
     2012: "beat-this",
-    2020: "llmchat",
+    2020: "llama",  # External llama.cpp server (OpenAI-compatible API)
     2099: "observer",
 }
 
@@ -143,11 +143,11 @@ SERVICE_META: dict[str, ServiceMeta] = {
         uses_attention=False,  # TCN-based, no self-attention
         sdpa_compatible=False,
     ),
-    "llmchat": ServiceMeta(
+    "llama": ServiceMeta(
         model="(dynamic)",
         model_type="text_generation",
         inference="autoregressive",
-        note="GQA attention, benefits heavily from SDPA",
+        note="External llama.cpp server, OpenAI-compatible API",
     ),
     "anticipatory": ServiceMeta(
         model="stanford-crfm/music-small-800k",
@@ -161,10 +161,10 @@ SERVICE_META: dict[str, ServiceMeta] = {
         note="Diffusion model for audio generation",
     ),
     "observer": ServiceMeta(
-        model="(llmchat default)",
+        model="(uses llama.cpp)",
         model_type="observability",
         inference="autoregressive",
-        expected_vram_gb=0.0,  # Uses llmchat, doesn't load its own model
+        expected_vram_gb=0.0,  # Uses external llama.cpp, doesn't load its own model
         uses_attention=False,  # No local model
     ),
 }
@@ -479,10 +479,11 @@ def _resolve_service_model(service: str) -> tuple[str | None, float | None]:
     return model_id, None
 
 
-def _query_llmchat_model() -> tuple[str | None, float | None]:
+def _query_llama_model() -> tuple[str | None, float | None]:
     """
-    Query llmchat's /v1/models to get currently loaded model.
+    Query llama.cpp's /v1/models to get currently loaded model.
 
+    llama.cpp exposes an OpenAI-compatible API on port 2020.
     Returns (model_name, estimated_vram_gb) tuple.
     """
     try:
@@ -490,21 +491,16 @@ def _query_llmchat_model() -> tuple[str | None, float | None]:
         resp.raise_for_status()
         data = resp.json()
         if data.get("data"):
-            model_id = data["data"][0].get("id", "")
-            # model_id is typically the full path like /tank/.../Qwen3-30B-A3B-Instruct-2507
-            model_path = Path(model_id) if "/" in model_id else None
+            model_info = data["data"][0]
+            model_id = model_info.get("id", "")
             model_name = model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
 
-            # Try to estimate VRAM from the actual path first
+            # Get model size from API metadata (llama.cpp provides this)
             estimated_vram = None
-            if model_path and model_path.exists():
-                estimated_vram = _estimate_vram_from_files(model_path)
-
-            # Fall back to searching known locations
-            if estimated_vram is None:
-                found_path = _find_model_path(model_name)
-                if found_path:
-                    estimated_vram = _estimate_vram_from_files(found_path)
+            meta = model_info.get("meta", {})
+            if meta.get("size"):
+                # size is in bytes, add ~15% overhead for KV cache/runtime
+                estimated_vram = (meta["size"] * 1.15) / 1e9
 
             return model_name, estimated_vram
     except Exception:
@@ -524,8 +520,8 @@ def build_process_map() -> dict[str, ServiceProcess]:
     port_to_pid = get_listening_pids()
     pid_to_vram = get_gpu_memory_by_pid()
 
-    # Dynamic model discovery for llmchat (via API)
-    llmchat_model, llmchat_estimated_vram = _query_llmchat_model()
+    # Dynamic model discovery for llama.cpp (via API)
+    llama_model, llama_estimated_vram = _query_llama_model()
 
     processes = {}
     for port, service in PORT_TO_SERVICE.items():
@@ -537,12 +533,12 @@ def build_process_map() -> dict[str, ServiceProcess]:
             if meta:
                 updates = {}
 
-                # llmchat: use API to get current model
-                if service == "llmchat":
-                    if llmchat_model:
-                        updates["model"] = llmchat_model
-                    if llmchat_estimated_vram is not None:
-                        updates["expected_vram_gb"] = llmchat_estimated_vram
+                # llama: use API to get current model
+                if service == "llama":
+                    if llama_model:
+                        updates["model"] = llama_model
+                    if llama_estimated_vram is not None:
+                        updates["expected_vram_gb"] = llama_estimated_vram
 
                 # All other services: resolve model path and estimate VRAM
                 elif meta.expected_vram_gb is None:

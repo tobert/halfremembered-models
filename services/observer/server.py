@@ -498,11 +498,11 @@ async def history(seconds: int = 60):
 class PredictRequest(BaseModel):
     """Request body for /predict endpoint."""
     prompt: str | None = None
-    max_tokens: int = 500
+    max_tokens: int = 5000  # Plenty of room for full analysis (36K context window)
 
 
-LLMCHAT_URL = "http://localhost:2020/v1/chat/completions"
-DEFAULT_MODEL = "qwen3-vl-4b"
+LLAMA_URL = "http://localhost:2020/v1/chat/completions"  # llama.cpp OpenAI-compatible API
+DEFAULT_MODEL = "default"  # llama.cpp uses "default" or model path
 
 SYSTEM_PROMPT = """You are a statistical data analyst for GPU/system telemetry on a ROCm-based ML inference system.
 Audience: Engineers and LLMs who will interpret meaning themselves.
@@ -579,7 +579,7 @@ async def predict(
     try:
         async with httpx.AsyncClient(timeout=3600.0) as client:  # 1 hour for slow models
             response = await client.post(
-                LLMCHAT_URL,
+                LLAMA_URL,
                 json={
                     "model": DEFAULT_MODEL,
                     "messages": [
@@ -610,9 +610,9 @@ async def predict(
             }
 
     except httpx.TimeoutException:
-        return {"error": "llmchat timed out", "status": "error"}
+        return {"error": "llama.cpp timed out", "status": "error"}
     except httpx.HTTPStatusError as e:
-        return {"error": f"llmchat error: {e.response.status_code}", "status": "error"}
+        return {"error": f"llama.cpp error: {e.response.status_code}", "status": "error"}
     except Exception as e:
         return {"error": str(e), "status": "error"}
 

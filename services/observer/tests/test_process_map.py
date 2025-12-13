@@ -10,7 +10,7 @@ def test_port_to_service_mapping():
     # Check some key ports
     assert PORT_TO_SERVICE[2000] == "orpheus-base"
     assert PORT_TO_SERVICE[2007] == "clap"
-    assert PORT_TO_SERVICE[2020] == "llmchat"
+    assert PORT_TO_SERVICE[2020] == "llama"
     assert PORT_TO_SERVICE[2099] == "observer"
 
 
@@ -108,5 +108,6 @@ def test_format_process_map_for_llm():
         assert output == "No services running"
     else:
         output = format_process_map_for_llm(processes)
-        assert "| Service |" in output
-        assert "| VRAM |" in output
+        assert "SERVICE" in output
+        assert "VRAM" in output
+        assert "## Active Models" in output
