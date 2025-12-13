@@ -69,8 +69,9 @@ just test clap
 | 2010 | audioldm2 | cvssp/audioldm2 | Text-to-audio diffusion |
 | 2011 | anticipatory | stanford-crfm/music-medium | Anticipatory music (800M) |
 | 2012 | beat-this | CPJKU/beat-this | Beat/downbeat detection |
-| 2020 | llmchat | Qwen3-VL-4B | OpenAI-compatible LLM API |
-| 2099 | observer | (uses llmchat) | GPU/system observability |
+| 2013 | demucs | facebook/demucs | Audio source separation (stems) |
+| 2020 | (external) | llama.cpp | OpenAI-compatible LLM API |
+| 2099 | observer | (uses llama.cpp) | GPU/system observability |
 
 ## Hardware
 
@@ -132,6 +133,7 @@ This repository contains code to run various ML models. The **model weights** th
 - **Orpheus Models**: Custom trained, CC-BY-NC 4.0.
 - **MusicGen**: Meta/Facebook Research (CC-BY-NC 4.0 / MIT).
 - **CLAP**: LAION (Apache 2.0 / MIT).
+- **Demucs**: Meta/Facebook Research (MIT).
 - **YuE**: Open source (Apache 2.0).
 - **Qwen2.5-VL**: Alibaba Cloud (Apache 2.0).
 
