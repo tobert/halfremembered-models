@@ -26,7 +26,7 @@ stop service:
 
 # Stop all services
 stop-all:
-    @for port in 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2020; do \
+    @for port in 2000 2001 2002 2003 2004 2005 2006 2007 2008 2009 2010 2011 2012 2013; do \
         pkill -f "python.*:$port" 2>/dev/null || true; \
     done
     @echo "Stopped all services"
@@ -276,6 +276,94 @@ download-xcodec:
     fi
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Containers
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Build the shared base image (Arch + PyTorch ROCm)
+container-base rocm_version="6.3":
+    podman build \
+        -f containers/Containerfile.base \
+        --build-arg ROCM_VERSION={{rocm_version}} \
+        -t halfremembered/base:latest \
+        .
+
+# Build a service container image
+container service:
+    podman build \
+        -f containers/Containerfile.service \
+        --build-arg SERVICE={{service}} \
+        --build-arg PORT=$(just _port {{service}}) \
+        --build-arg BASE_IMAGE=halfremembered/base:latest \
+        -t halfremembered/{{service}}:latest \
+        .
+
+# Build all service images (requires base to exist)
+container-all: container-base
+    #!/usr/bin/env bash
+    set -e
+    services=(
+        clap musicgen audioldm2
+        orpheus-base orpheus-classifier orpheus-bridge
+        orpheus-loops orpheus-children orpheus-mono
+        anticipatory beat-this demucs yue observer
+    )
+    for svc in "${services[@]}"; do
+        echo "🐳 Building $svc..."
+        just container "$svc"
+    done
+    echo "✅ All containers built"
+
+# Run a service container with GPU access
+container-run service:
+    podman run --rm -it \
+        --device /dev/kfd \
+        --device /dev/dri \
+        --group-add video \
+        --group-add render \
+        --shm-size 16g \
+        -v ./data:/data:rw \
+        -p $(just _port {{service}}):$(just _port {{service}}) \
+        -e TORCH_ROCM_AOTRITON_ENABLE_EXPERIMENTAL=1 \
+        halfremembered/{{service}}:latest \
+        server:app --host 0.0.0.0 --port $(just _port {{service}})
+
+# Run container interactively (shell access for debugging)
+container-shell service:
+    podman run --rm -it \
+        --device /dev/kfd \
+        --device /dev/dri \
+        --group-add video \
+        --group-add render \
+        --shm-size 16g \
+        -v ./data:/data:rw \
+        --entrypoint /bin/bash \
+        halfremembered/{{service}}:latest
+
+# Start all services with compose
+compose-up *args:
+    podman-compose -f containers/compose.yaml up {{args}}
+
+# Stop all services
+compose-down:
+    podman-compose -f containers/compose.yaml down
+
+# Follow logs for compose services
+compose-logs *service:
+    podman-compose -f containers/compose.yaml logs -f {{service}}
+
+# Show compose status
+compose-ps:
+    podman-compose -f containers/compose.yaml ps
+
+# List container images
+container-images:
+    @podman images | grep halfremembered
+
+# Remove all halfremembered images
+container-clean:
+    podman rmi $(podman images -q 'halfremembered/*') 2>/dev/null || echo "No images to remove"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Internal helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -294,7 +382,7 @@ _port service:
         audioldm2) echo 2010 ;; \
         anticipatory) echo 2011 ;; \
         beat-this) echo 2012 ;; \
-        llmchat) echo 2020 ;; \
+        demucs) echo 2013 ;; \
         observer) echo 2099 ;; \
         *) echo "Unknown service: {{service}}" >&2; exit 1 ;; \
     esac

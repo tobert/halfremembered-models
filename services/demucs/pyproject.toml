@@ -1,0 +1,54 @@
+[project]
+name = "demucs-service"
+version = "1.0.0"
+description = "Demucs audio source separation service for halfremembered"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "torch",
+    "torchaudio",
+    "pytorch-triton-rocm",
+
+    # Demucs dependencies
+    "demucs",
+    "dora-search",
+    "einops",
+    "julius>=0.2.3",
+    "lameenc>=1.2",
+    "openunmix",
+
+    # Service dependencies
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "numpy",
+    "soundfile",
+    "hrserve",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+]
+
+[tool.uv]
+package = false
+
+# Use PyTorch ROCm nightly index for torch packages
+[[tool.uv.index]]
+name = "pytorch-rocm"
+url = "https://download.pytorch.org/whl/nightly/rocm7.1"
+explicit = true
+
+[tool.uv.sources]
+hrserve = { path = "../../hrserve", editable = true }
+torch = { index = "pytorch-rocm" }
+torchaudio = { index = "pytorch-rocm" }
+pytorch-triton-rocm = { index = "pytorch-rocm" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "benchmark: marks tests as benchmarks",
+]

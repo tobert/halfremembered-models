@@ -61,9 +61,11 @@ curl -X POST http://localhost:2007/predict \
 | **musicgen** | Text-to-audio generation (Meta's model) |
 | **audioldm2** | Text-to-audio diffusion (sound effects, music, ambient) |
 | **clap** | Audio embeddings, zero-shot classification |
+| **demucs** | Audio source separation (split into drums, bass, vocals, other) |
 | **yue** | Lyrics → full song with vocals (7B + 1B, slow) |
-| **llmchat** | OpenAI-compatible chat API (tool calling supported) |
 | **observer** | GPU/system metrics with LLM analysis |
+
+> **Note**: Port 2020 is reserved for an external llama.cpp server (OpenAI-compatible API) used by observer for LLM analysis.
 
 ## Quick Commands
 
@@ -198,7 +200,8 @@ Each service exposes:
 | 2010 | audioldm2 | ✅ |
 | 2011 | anticipatory | ✅ |
 | 2012 | beat-this | ✅ |
-| 2020 | llmchat | ✅ |
+| 2013 | demucs | ✅ |
+| 2020 | llama.cpp (external) | 🔗 |
 | 2099 | observer | ✅ |
 
 ## hrserve Library

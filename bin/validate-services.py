@@ -34,7 +34,8 @@ SERVICES = [
     ("yue", 2008),
     ("anticipatory", 2011),
     ("beat-this", 2012),
-    ("llmchat", 2020),
+    ("demucs", 2013),
+    # Note: llama.cpp on port 2020 is external, not validated here
 ]
 
 
@@ -247,22 +248,18 @@ def test_beat_this(port: int, audio_b64: str) -> tuple[bool, str]:
         return False, str(e)
 
 
-def test_llmchat(port: int) -> tuple[bool, str]:
-    """Test llmchat OpenAI-compatible endpoint."""
+def test_demucs(port: int, audio_b64: str) -> tuple[bool, str]:
+    """Test demucs source separation."""
     try:
         r = httpx.post(
-            f"http://localhost:{port}/v1/chat/completions",
-            json={
-                "model": "default",
-                "messages": [{"role": "user", "content": "Say 'test ok' and nothing else."}],
-                "max_tokens": 10
-            },
-            timeout=60.0
+            f"http://localhost:{port}/predict",
+            json={"audio": audio_b64, "stems": ["vocals"]},
+            timeout=120.0
         )
         if r.status_code == 200:
             data = r.json()
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            return True, f"response: {content[:30]}..."
+            stems = [s["name"] for s in data.get("stems", [])]
+            return True, f"separated: {', '.join(stems)}"
         return False, f"HTTP {r.status_code}: {r.text[:100]}"
     except Exception as e:
         return False, str(e)
@@ -322,8 +319,11 @@ def main():
                 predict_ok, message = test_beat_this(port, audio_b64)
             else:
                 predict_ok, message = None, "no test audio"
-        elif name == "llmchat":
-            predict_ok, message = test_llmchat(port)
+        elif name == "demucs":
+            if audio_b64:
+                predict_ok, message = test_demucs(port, audio_b64)
+            else:
+                predict_ok, message = None, "no test audio"
 
         predict_str = "—"
         if predict_ok is True:
